@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Services\Backups\BackupStorage;
 use App\Services\Backups\LocalBackupStorage;
 use App\Services\Docker\DockerClient;
+use App\Services\Instance;
 use App\Services\Process\CommandRunner;
 use App\Services\Process\SymfonyCommandRunner;
 use App\Services\Routing\CaddyReloader;
@@ -20,6 +21,7 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->bind(CommandRunner::class, SymfonyCommandRunner::class);
+        $this->app->singleton(Instance::class);
         $this->app->singleton(DockerClient::class, fn () => DockerClient::fromConfig());
         $this->app->bind(CaddyReloader::class, DockerCaddyReloader::class);
         $this->app->singleton(BackupStorage::class, function () {

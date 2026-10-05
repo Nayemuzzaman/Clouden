@@ -12,6 +12,7 @@ use App\Services\Docker\DockerClient;
 use App\Services\Docker\DockerException;
 use App\Services\Environment\EnvironmentService;
 use App\Services\Environment\LogRedactor;
+use App\Services\Instance;
 use App\Services\Notifier;
 use App\Services\Routing\CaddyConfigurator;
 use App\Services\Routing\RoutingException;
@@ -49,6 +50,7 @@ class DeploymentPipeline
         private readonly ImageRetention $retention,
         private readonly AuditLogger $audit,
         private readonly Notifier $notifier,
+        private readonly Instance $instance,
         ?callable $sleeper = null,
     ) {
         $this->sleeper = $sleeper ?? fn (int $s) => sleep($s);
@@ -220,7 +222,7 @@ class DeploymentPipeline
                 $context,
                 $dockerfile,
                 $tag,
-                ['privatecloud.managed' => 'true', 'privatecloud.project' => (string) $project->id, 'privatecloud.deployment' => (string) $deployment->id, 'privatecloud.commit' => $commit->sha],
+                [...$this->instance->labels($project), 'privatecloud.deployment' => (string) $deployment->id, 'privatecloud.commit' => $commit->sha],
                 $this->environment->buildArgs($project),
                 fn (string $line) => $log->write('build', $line),
             );
@@ -438,8 +440,8 @@ class DeploymentPipeline
             if ($name === '' || $name === $current) {
                 continue;
             }
-            if (($container['Labels']['privatecloud.helper'] ?? null) === 'true') {
-                continue;
+            if (($container['Labels']['privatecloud.helper'] ?? null) === 'true' || ! $this->instance->owns($container['Labels'] ?? [])) {
+                continue; // helper, or left on this host by another PrivateCloud installation
             }
             try {
                 $this->launcher->retire($name);

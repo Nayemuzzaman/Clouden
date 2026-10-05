@@ -5,6 +5,7 @@ namespace App\Services\Deployment;
 use App\Models\Project;
 use App\Services\Docker\DockerClient;
 use App\Services\Docker\DockerException;
+use App\Services\Instance;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -18,15 +19,15 @@ use Illuminate\Support\Facades\Log;
  */
 class NetworkManager
 {
-    public function __construct(private readonly DockerClient $docker) {}
+    public function __construct(
+        private readonly DockerClient $docker,
+        private readonly Instance $instance,
+    ) {}
 
     public function prepare(Project $project): void
     {
         $network = $project->networkName();
-        $this->docker->ensureNetwork($network, [
-            'privatecloud.managed' => 'true',
-            'privatecloud.project' => (string) $project->id,
-        ]);
+        $this->docker->ensureNetwork($network, $this->instance->labels($project));
 
         $this->attach($network, (string) config('privatecloud.docker.caddy_container'));
         $this->attach($network, (string) config('privatecloud.docker.worker_container'));
@@ -72,7 +73,7 @@ class NetworkManager
     public function attachDatabase(Project $project): void
     {
         $network = $project->networkName();
-        $this->docker->ensureNetwork($network, ['privatecloud.managed' => 'true', 'privatecloud.project' => (string) $project->id]);
+        $this->docker->ensureNetwork($network, $this->instance->labels($project));
         $this->attach($network, (string) config('privatecloud.docker.apps_db_container'), [(string) config('privatecloud.apps_db.app_host_alias')]);
     }
 

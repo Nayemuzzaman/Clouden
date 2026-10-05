@@ -9,6 +9,7 @@ use App\Models\Deployment;
 use App\Models\Domain;
 use App\Models\Project;
 use App\Services\Deployment\HealthChecker;
+use App\Services\Instance;
 use App\Services\Process\CommandResult;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
@@ -270,6 +271,32 @@ class DeploymentPipelineTest extends TestCase
         $this->assertSame('starting', $failed->failure_stage);
         $this->assertStringContainsString('belongs to another project', (string) $failed->failure_reason);
         $this->assertSame([], array_filter($this->docker->calls, fn ($c) => str_starts_with($c, 'create:')), 'no container was created');
+    }
+
+    public function test_resources_of_another_installation_are_never_touched(): void
+    {
+        $this->actingAsAdmin();
+        // Left on this Docker host by an earlier PrivateCloud installation whose project ids also started at 1.
+        $this->docker->addImage('old:1');
+        $this->docker->createContainer('old-install-app', ['Image' => 'old:1', 'Labels' => ['privatecloud.managed' => 'true', 'privatecloud.project' => (string) $this->project->id, 'privatecloud.instance' => 'another-installation']]);
+
+        $deployment = $this->deploy()->fresh();
+
+        $this->assertSame(DeploymentStatus::Success, $deployment->status);
+        $this->assertArrayHasKey('old-install-app', $this->docker->containers, 'stray cleanup skips other installations');
+        $labels = $this->docker->containers['pc-shop-1']['Config']['Labels'];
+        $this->assertSame(app(Instance::class)->id(), $labels['privatecloud.instance']);
+
+        $this->project->volumes()->create(['name' => 'data', 'mount_path' => '/data', 'docker_name' => 'pc-vol-old']);
+        $this->docker->volumes['pc-vol-old'] = ['privatecloud.project' => (string) $this->project->id, 'privatecloud.instance' => 'another-installation'];
+        $failed = $this->deploy()->fresh();
+        $this->assertSame('starting', $failed->failure_stage, 'a volume of another installation is never mounted');
+
+        $this->project->volumes()->delete();
+        $this->deleteJson('/api/v1/projects/shop', ['confirm' => 'Shop'])->assertStatus(202);
+        $this->assertNull(Project::query()->find($this->project->id));
+        $this->assertArrayHasKey('old-install-app', $this->docker->containers, 'deletion skips other installations');
+        $this->assertArrayNotHasKey('pc-shop-1', $this->docker->containers);
     }
 
     public function test_rollback_refuses_an_image_tag_that_now_points_to_a_different_image(): void

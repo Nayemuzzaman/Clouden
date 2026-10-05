@@ -6,13 +6,14 @@ use App\Http\Controllers\Controller;
 use App\Models\Metric;
 use App\Models\Project;
 use App\Services\Docker\DockerClient;
+use App\Services\Instance;
 use Illuminate\Http\JsonResponse;
 use Throwable;
 
 /** Read-only overview of the containers on this server. */
 class ContainerController extends Controller
 {
-    public function index(DockerClient $docker): JsonResponse
+    public function index(DockerClient $docker, Instance $instance): JsonResponse
     {
         try {
             $containers = $docker->listContainers();
@@ -29,7 +30,7 @@ class ContainerController extends Controller
             if (($labels['privatecloud.helper'] ?? null) === 'true') {
                 continue;
             }
-            $projectId = isset($labels['privatecloud.project']) ? (int) $labels['privatecloud.project'] : null;
+            $projectId = isset($labels['privatecloud.project']) && $instance->owns($labels) ? (int) $labels['privatecloud.project'] : null;
             $project = $projectId ? $projects->get($projectId) : null;
             $isPlatform = str_starts_with(ltrim((string) ($c['Names'][0] ?? ''), '/'), 'privatecloud-');
             if (! $project && ! $isPlatform && ($labels['privatecloud.managed'] ?? null) !== 'true') {

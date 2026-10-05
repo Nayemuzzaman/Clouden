@@ -10,6 +10,7 @@ use App\Services\Backups\BackupStorage;
 use App\Services\Databases\DatabaseService;
 use App\Services\Deployment\NetworkManager;
 use App\Services\Docker\DockerClient;
+use App\Services\Instance;
 use App\Services\Routing\CaddyConfigurator;
 use App\Services\Source\GitHubClient;
 use Throwable;
@@ -24,6 +25,7 @@ class ProjectDeleter
         private readonly DatabaseService $databases,
         private readonly BackupStorage $storage,
         private readonly AuditLogger $audit,
+        private readonly Instance $instance,
     ) {}
 
     public function run(Operation $operation, Project $project): void
@@ -39,6 +41,9 @@ class ProjectDeleter
             // 2. Containers
             $operation->progress('Stopping containers');
             foreach ($this->docker->listContainers(['label' => ['privatecloud.project='.$project->id]]) as $container) {
+                if (! $this->instance->owns($container['Labels'] ?? [])) {
+                    continue; // same project id, but created by another PrivateCloud installation
+                }
                 $this->docker->removeContainer((string) $container['Id'], force: true);
             }
 

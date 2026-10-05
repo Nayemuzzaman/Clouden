@@ -7,6 +7,7 @@ use App\Models\Deployment;
 use App\Models\Project;
 use App\Services\Docker\DockerClient;
 use App\Services\Environment\EnvironmentService;
+use App\Services\Instance;
 
 /** Creates application containers with resource limits and hardening applied. */
 class ContainerLauncher
@@ -14,6 +15,7 @@ class ContainerLauncher
     public function __construct(
         private readonly DockerClient $docker,
         private readonly EnvironmentService $environment,
+        private readonly Instance $instance,
     ) {}
 
     public static function containerName(Project $project, Deployment $deployment): string
@@ -50,9 +52,10 @@ class ContainerLauncher
 
         $mounts = [];
         foreach ($project->volumes as $volume) {
-            $existing = $this->docker->ensureVolume($volume->docker_name, ['privatecloud.managed' => 'true', 'privatecloud.project' => (string) $project->id]);
-            $owner = $existing['Labels']['privatecloud.project'] ?? null;
-            if ($owner !== null && $owner !== (string) $project->id) {
+            $existing = $this->docker->ensureVolume($volume->docker_name, $this->instance->labels($project));
+            $labels = $existing['Labels'] ?? [];
+            $owner = $labels['privatecloud.project'] ?? null;
+            if (($owner !== null && $owner !== (string) $project->id) || ! $this->instance->owns($labels)) {
                 throw new DeploymentFailed('starting', "The Docker volume {$volume->docker_name} belongs to another project, so it was not mounted.");
             }
             $mounts[] = ['Type' => 'volume', 'Source' => $volume->docker_name, 'Target' => $volume->mount_path];
@@ -68,8 +71,7 @@ class ContainerLauncher
             'Image' => $image,
             'Env' => $env,
             'Labels' => [
-                'privatecloud.managed' => 'true',
-                'privatecloud.project' => (string) $project->id,
+                ...$this->instance->labels($project),
                 'privatecloud.project_slug' => $project->slug,
                 'privatecloud.deployment' => (string) $deployment->id,
             ],
