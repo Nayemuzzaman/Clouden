@@ -120,6 +120,17 @@ return [
         'storage' => env('PC_BACKUP_STORAGE', 'local'),
         'local_path' => env('PC_BACKUP_PATH', env('PC_DATA_DIR', storage_path('privatecloud')).'/backups'),
         'timeout' => (int) env('PC_BACKUP_TIMEOUT', 3600),
+        // Free disk space that must remain after a backup (the backup's expected
+        // size, i.e. the current database/volume size, is added on top).
+        'min_free_disk_mb' => (int) env('PC_BACKUP_MIN_FREE_DISK_MB', 1024),
+    ],
+
+    'retention' => [
+        // Build logs of old deployments, read notifications, finished operations and
+        // SQL history older than this are deleted daily. Webhook deliveries are
+        // kept as long as the audit log (they protect against replays).
+        'history_days' => (int) env('PC_HISTORY_RETENTION_DAYS', 90),
+        'audit_days' => (int) env('PC_AUDIT_RETENTION_DAYS', 365),
     ],
 
     'logs' => [

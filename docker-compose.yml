@@ -24,6 +24,9 @@ x-app: &app
     REDIS_HOST: privatecloud-redis
     REDIS_CLIENT: phpredis
     QUEUE_CONNECTION: redis
+    # Longer than the longest job (restore: 2 x PC_BACKUP_TIMEOUT + 300 s), so a
+    # running job is never handed out a second time while it is still running.
+    REDIS_QUEUE_RETRY_AFTER: "8000"
     CACHE_STORE: redis
     SESSION_DRIVER: database
     PC_APPS_DB_HOST: privatecloud-apps-db
@@ -34,6 +37,11 @@ x-app: &app
   user: "${PC_UID:-33}:${PC_GID:-33}"
   group_add:
     - "${DOCKER_GID:-999}"
+  # The control plane needs no Linux capabilities. Note that membership of the
+  # docker group (for the socket below) is still equivalent to root on the host:
+  # see docs/security.md "The Docker socket is a privileged trust boundary".
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     # Same path inside and outside: helper containers bind-mount sub-directories through the daemon.
@@ -65,6 +73,7 @@ services:
     container_name: privatecloud-worker
     command: ["worker"]
     healthcheck: { disable: true }
+    stop_grace_period: 30s
     depends_on:
       app: { condition: service_healthy }
 
@@ -73,6 +82,7 @@ services:
     container_name: privatecloud-tasks
     command: ["tasks"]
     healthcheck: { disable: true }
+    stop_grace_period: 30s
     depends_on:
       app: { condition: service_healthy }
 
@@ -92,6 +102,9 @@ services:
       POSTGRES_USER: privatecloud
       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
     volumes: [platform-db:/var/lib/postgresql/data]
+    # If the server runs out of memory, the kernel should kill a build or an
+    # application before the databases, Redis or the web server.
+    oom_score_adj: -500
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U privatecloud -d privatecloud"]
       interval: 5s
@@ -112,6 +125,7 @@ services:
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=${PC_APPS_DB_SHARED_BUFFERS:-128MB}", "-c", "password_encryption=scram-sha-256"]
     volumes: [apps-db:/var/lib/postgresql/data]
+    oom_score_adj: -500
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -126,6 +140,7 @@ services:
     container_name: privatecloud-redis
     command: ["redis-server", "--appendonly", "yes", "--save", "60", "100"]
     volumes: [redis:/data]
+    oom_score_adj: -500
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -151,6 +166,8 @@ services:
       - ${PC_DATA_DIR}/caddy/logs:/var/log/caddy
       - caddy-data:/data
       - caddy-config:/config
+    oom_score_adj: -500
+    security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
     networks: [platform]
     depends_on:

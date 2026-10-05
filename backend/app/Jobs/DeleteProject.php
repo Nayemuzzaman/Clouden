@@ -40,7 +40,8 @@ class DeleteProject implements ShouldQueue
     {
         $operation = Operation::query()->find($this->operationId);
         $project = Project::query()->find($this->projectId);
-        if ($operation && $project) {
+        // A deletion marked failed (e.g. interrupted by a worker restart) is only resumed when requested again.
+        if ($operation && $project && in_array($operation->status->value, ['queued', 'running'], true)) {
             $deleter->run($operation, $project);
         }
     }

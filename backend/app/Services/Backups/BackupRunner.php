@@ -5,6 +5,7 @@ namespace App\Services\Backups;
 use App\Enums\JobStatus;
 use App\Models\Backup;
 use App\Services\Audit\AuditLogger;
+use App\Services\Databases\PostgresProvisioner;
 use App\Services\Docker\HelperContainer;
 use App\Services\Notifier;
 use App\Services\Process\CommandRunner;
@@ -25,6 +26,7 @@ class BackupRunner
         private readonly BackupStorage $storage,
         private readonly Notifier $notifier,
         private readonly AuditLogger $audit,
+        private readonly PostgresProvisioner $provisioner,
     ) {}
 
     public function run(Backup $backup): Backup
@@ -37,6 +39,7 @@ class BackupRunner
 
         $key = null;
         try {
+            $this->ensureDiskSpace($backup);
             $key = $backup->type === Backup::TYPE_DATABASE ? $this->dumpDatabase($backup) : $this->archiveVolume($backup);
             $path = $this->storage->stagingPath($key);
             $this->verify($backup, $path);
@@ -122,6 +125,32 @@ class BackupRunner
         }
 
         return $key;
+    }
+
+    /**
+     * Refuse to start when the backup would leave less than the configured free
+     * space. The expected size is the current (uncompressed) size of the
+     * database or volume, an upper bound for the compressed backup.
+     */
+    private function ensureDiskSpace(Backup $backup): void
+    {
+        $root = $this->storage->stagingPath('.disk-check');
+        $free = @disk_free_space(dirname($root));
+        if ($free === false) {
+            return;
+        }
+        $expected = match ($backup->type) {
+            Backup::TYPE_DATABASE => $backup->database ? ($this->provisioner->size($backup->database->name) ?? 0) : 0,
+            default => (int) ($backup->volume->size_bytes ?? 0),
+        };
+        $required = (int) config('privatecloud.backups.min_free_disk_mb') * 1024 * 1024 + $expected;
+        if ($free < $required) {
+            throw new RuntimeException(sprintf(
+                'Not enough free disk space for this backup (%s free, about %s needed). Delete old backups or copy them off the server, then try again.',
+                self::humanSize((int) $free),
+                self::humanSize($required),
+            ));
+        }
     }
 
     private function verify(Backup $backup, string $path): void

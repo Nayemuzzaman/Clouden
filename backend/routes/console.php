@@ -12,3 +12,4 @@ Schedule::command('privatecloud:scheduled-backups')->everyFiveMinutes()->without
 Schedule::command('privatecloud:metrics --prune')->hourly();
 Schedule::command('privatecloud:cleanup')->weeklyOn(0, '04:30');
 Schedule::command('queue:prune-failed --hours=720')->daily();
+Schedule::command('privatecloud:prune-history')->dailyAt('04:10')->withoutOverlapping(60);

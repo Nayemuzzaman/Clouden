@@ -92,10 +92,16 @@ class BackupService
         if ($backup->type === Backup::TYPE_VOLUME && $backup->volume === null) {
             throw new DomainException('The volume this backup belongs to no longer exists.');
         }
-        $running = Operation::query()->where('type', 'backup.restore')->whereIn('status', ['queued', 'running'])
-            ->where('target_type', $backup->getMorphClass())->where('target_id', $backup->id)->exists();
+        // One restore at a time per database/volume, whichever backup it comes from.
+        $runningTargets = Operation::query()->where('type', 'backup.restore')->whereIn('status', ['queued', 'running'])
+            ->where('target_type', $backup->getMorphClass())->pluck('target_id');
+        $running = $runningTargets->isNotEmpty() && Backup::query()->whereIn('id', $runningTargets)
+            ->where(fn ($q) => $backup->type === Backup::TYPE_DATABASE
+                ? $q->where('project_database_id', $backup->project_database_id)
+                : $q->where('volume_id', $backup->volume_id))
+            ->exists();
         if ($running) {
-            throw new DomainException('A restore of this backup is already in progress.');
+            throw new DomainException('A restore of this '.($backup->type === Backup::TYPE_DATABASE ? 'database' : 'volume').' is already in progress.');
         }
 
         $operation = Operation::query()->create([

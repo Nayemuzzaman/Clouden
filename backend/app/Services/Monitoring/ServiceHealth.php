@@ -6,6 +6,7 @@ use App\Services\Databases\PostgresProvisioner;
 use App\Services\Docker\DockerClient;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
 use Throwable;
 
@@ -19,16 +20,21 @@ class ServiceHealth
     ) {}
 
     /** @return list<array{key: string, name: string, status: string, detail: ?string}> */
-    public function check(): array
+    public function check(bool $fresh = false): array
     {
-        return Cache::remember('privatecloud:service-health', 15, fn () => [
+        $run = fn () => [
             $this->docker(),
             $this->platformDatabase(),
             $this->appsDatabase(),
             $this->caddy(),
             $this->redis(),
             $this->worker(),
-        ]);
+        ];
+        if ($fresh) {
+            return $run();
+        }
+
+        return Cache::remember('privatecloud:service-health', 15, $run);
     }
 
     private function docker(): array
@@ -71,8 +77,17 @@ class ServiceHealth
                 return $this->status('caddy', 'Caddy (web server)', 'down', 'The Caddy container does not exist.');
             }
             $running = (bool) ($info['State']['Running'] ?? false);
+            if (! $running) {
+                return $this->status('caddy', 'Caddy (web server)', 'down', 'The Caddy container is not running.');
+            }
+            // A running container is not enough: Caddy must also answer HTTP.
+            try {
+                Http::timeout(3)->connectTimeout(2)->withoutRedirecting()->get('http://'.config('privatecloud.caddy.tls_host').'/');
+            } catch (Throwable) {
+                return $this->status('caddy', 'Caddy (web server)', 'down', 'The Caddy container is running but does not answer HTTP requests.');
+            }
 
-            return $this->status('caddy', 'Caddy (web server)', $running ? 'ok' : 'down', $running ? 'Serving HTTP/HTTPS' : 'The Caddy container is not running.');
+            return $this->status('caddy', 'Caddy (web server)', 'ok', 'Serving HTTP/HTTPS');
         } catch (Throwable) {
             return $this->status('caddy', 'Caddy (web server)', 'unknown', 'Cannot inspect Caddy because Docker is not reachable.');
         }

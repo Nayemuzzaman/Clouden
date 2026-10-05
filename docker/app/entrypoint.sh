@@ -31,24 +31,29 @@ prepare() {
   php artisan config:cache >/dev/null
   php artisan route:cache >/dev/null
   php artisan event:cache >/dev/null
+  # Refuse to run with an unsafe production configuration (e.g. a development .env).
+  php artisan privatecloud:check-config
 }
 
 role="${1:-app}"
 case "$role" in
   app)
     wait_for_database
-    php artisan migrate --force --isolated
     prepare
+    php artisan migrate --force --isolated
     exec frankenphp run --config /etc/frankenphp/Caddyfile
     ;;
   worker)
     wait_for_database
     prepare
+    # This is the only deployments worker: anything still "running" was interrupted.
+    php artisan privatecloud:recover-interrupted deployments || true
     exec php artisan queue:work --queue=deployments --sleep=2 --timeout="$(( ${PC_BUILD_TIMEOUT:-1800} + 900 ))" --memory=512 --max-time=86400
     ;;
   tasks)
     wait_for_database
     prepare
+    php artisan privatecloud:recover-interrupted default || true
     exec php artisan queue:work --queue=default --sleep=2 --timeout="$(( ${PC_BACKUP_TIMEOUT:-3600} * 2 + 300 ))" --memory=512 --max-time=86400
     ;;
   scheduler)
