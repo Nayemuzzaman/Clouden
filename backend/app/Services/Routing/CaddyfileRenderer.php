@@ -32,6 +32,7 @@ final class CaddyfileRenderer
         \tencode zstd gzip
         \tlog {
         \t\toutput file {$logsDir}/{$slug}.access.log {
+        \t\t\tmode 0644
         \t\t\troll_size 10MiB
         \t\t\troll_keep 3
         \t\t}

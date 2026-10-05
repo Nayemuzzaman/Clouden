@@ -39,6 +39,8 @@ Route::prefix('v1')->group(function () {
             Route::post('auth/logout', [AuthController::class, 'logout']);
             Route::post('auth/confirm-password', [AuthController::class, 'confirmPassword'])->middleware('throttle:login');
             Route::put('auth/password', [AuthController::class, 'changePassword'])->middleware('throttle:sensitive');
+            // Preflight used by the dashboard before plain-link downloads that require a recent password.
+            Route::post('auth/recent', fn () => response()->noContent())->middleware('password.recent');
 
             Route::get('dashboard', [DashboardController::class, 'index']);
             Route::get('search', [DashboardController::class, 'search']);

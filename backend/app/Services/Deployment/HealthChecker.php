@@ -71,7 +71,7 @@ class HealthChecker
                 $lastReason = str_contains($e->getMessage(), 'Connection refused') || str_contains($e->getMessage(), 'Failed to connect')
                     ? "Nothing is listening on port {$project->port}. Make sure the application listens on 0.0.0.0:{$project->port} (the PORT environment variable is set for you)."
                     : 'The health check request failed: '.mb_substr($e->getMessage(), 0, 200);
-                $log("Attempt {$attempt}: not ready (".mb_substr($e->getMessage(), 0, 120).')');
+                $log("Attempt {$attempt}: ".self::describeConnectionError($e->getMessage(), $project->health_check_timeout));
             }
 
             if ($attempt < $retries) {
@@ -80,6 +80,16 @@ class HealthChecker
         }
 
         return ['healthy' => false, 'reason' => $lastReason ?? 'The application did not become healthy.'];
+    }
+
+    private static function describeConnectionError(string $message, int $timeout): string
+    {
+        return match (true) {
+            str_contains($message, 'Failed to connect'), str_contains($message, 'Connection refused'), str_contains($message, "Couldn't connect") => 'not accepting connections yet',
+            str_contains($message, 'timed out'), str_contains($message, 'Timeout') => "no response within {$timeout}s",
+            str_contains($message, 'Could not resolve') => 'container not reachable on the network yet',
+            default => 'not ready ('.mb_substr($message, 0, 120).')',
+        };
     }
 
     /** @param callable(string): void $log */

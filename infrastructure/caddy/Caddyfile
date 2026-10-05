@@ -24,6 +24,7 @@
 	}
 	log {
 		output file /var/log/caddy/dashboard.access.log {
+			mode 0644
 			roll_size 10MiB
 			roll_keep 3
 		}
