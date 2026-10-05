@@ -1,0 +1,169 @@
+# PrivateCloud control plane.
+#
+# Production:  docker compose up -d          (configured by scripts/install.sh)
+# Development: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Only Caddy publishes ports (80/443). PostgreSQL, Redis, the Docker socket and
+# the API container are reachable only on the internal "privatecloud-platform"
+# network.
+name: privatecloud
+
+x-app: &app
+  image: privatecloud/app:${PC_VERSION:-local}
+  build:
+    context: .
+    dockerfile: docker/app/Dockerfile
+  env_file: .env
+  environment: &app-env
+    APP_ENV: ${APP_ENV:-production}
+    DB_CONNECTION: pgsql
+    DB_HOST: privatecloud-platform-db
+    DB_PORT: "5432"
+    DB_DATABASE: privatecloud
+    DB_USERNAME: privatecloud
+    REDIS_HOST: privatecloud-redis
+    REDIS_CLIENT: phpredis
+    QUEUE_CONNECTION: redis
+    CACHE_STORE: redis
+    SESSION_DRIVER: database
+    PC_APPS_DB_HOST: privatecloud-apps-db
+    PC_HOST_PROC: /host/proc
+    PC_CADDY_SITES_DIR: ${PC_DATA_DIR}/caddy/sites
+    PC_CADDY_LOGS_DIR: ${PC_DATA_DIR}/caddy/logs
+    PC_BACKUP_PATH: ${PC_DATA_DIR}/backups
+  user: "${PC_UID:-33}:${PC_GID:-33}"
+  group_add:
+    - "${DOCKER_GID:-999}"
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    # Same path inside and outside: helper containers bind-mount sub-directories through the daemon.
+    - ${PC_DATA_DIR}:${PC_DATA_DIR}
+    - /proc:/host/proc:ro
+  restart: unless-stopped
+  networks: [platform]
+  depends_on:
+    platform-db: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  logging: &logging
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  app:
+    <<: *app
+    container_name: privatecloud-app
+    command: ["app"]
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8000/up') === false ? 1 : 0);"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  worker:
+    <<: *app
+    container_name: privatecloud-worker
+    command: ["worker"]
+    healthcheck: { disable: true }
+    depends_on:
+      app: { condition: service_healthy }
+
+  tasks:
+    <<: *app
+    container_name: privatecloud-tasks
+    command: ["tasks"]
+    healthcheck: { disable: true }
+    depends_on:
+      app: { condition: service_healthy }
+
+  scheduler:
+    <<: *app
+    container_name: privatecloud-scheduler
+    command: ["scheduler"]
+    healthcheck: { disable: true }
+    depends_on:
+      app: { condition: service_healthy }
+
+  platform-db:
+    image: postgres:17-alpine
+    container_name: privatecloud-platform-db
+    environment:
+      POSTGRES_DB: privatecloud
+      POSTGRES_USER: privatecloud
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+    volumes: [platform-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U privatecloud -d privatecloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks: [platform]
+    logging: *logging
+
+  # Separate PostgreSQL server for application databases. Its superuser password
+  # is only known to the control plane; each application gets its own role.
+  apps-db:
+    image: postgres:17-alpine
+    container_name: privatecloud-apps-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PC_APPS_DB_ADMIN_PASSWORD:?PC_APPS_DB_ADMIN_PASSWORD must be set}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=${PC_APPS_DB_SHARED_BUFFERS:-128MB}", "-c", "password_encryption=scram-sha-256"]
+    volumes: [apps-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks: [platform]
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: privatecloud-redis
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "100"]
+    volumes: [redis:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks: [platform]
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: privatecloud-caddy
+    ports:
+      - "${PC_HTTP_PORT:-80}:80"
+      - "${PC_HTTPS_PORT:-443}:443"
+      - "${PC_HTTPS_PORT:-443}:443/udp"
+    environment:
+      PC_DASHBOARD_ADDRESS: ${PC_DASHBOARD_ADDRESS:-${PC_DASHBOARD_DOMAIN}}
+      PC_CADDY_ACME_EMAIL_OPTION: ${PC_ACME_EMAIL:+email ${PC_ACME_EMAIL}}
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${PC_DATA_DIR}/caddy/sites:/etc/caddy/sites:ro
+      - ${PC_DATA_DIR}/caddy/logs:/var/log/caddy
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    networks: [platform]
+    depends_on:
+      app: { condition: service_started }
+    logging: *logging
+
+networks:
+  platform:
+    name: privatecloud-platform
+
+volumes:
+  platform-db:
+  apps-db:
+  redis:
+  caddy-data:
+  caddy-config:

@@ -8,6 +8,7 @@ use App\Enums\ProjectStatus;
 use App\Models\Backup;
 use App\Models\Deployment;
 use App\Models\Project;
+use App\Services\Deployment\NetworkManager;
 use App\Services\Docker\DockerClient;
 use App\Services\Notifier;
 use Illuminate\Console\Command;
@@ -16,7 +17,8 @@ use Throwable;
 /**
  * Brings recorded state back in line with reality:
  *  - deployments/backups stuck in an active state (worker died) are marked failed;
- *  - projects whose live container stopped unexpectedly are marked crashed (and back).
+ *  - projects whose live container stopped unexpectedly are marked crashed (and back);
+ *  - platform containers that were recreated are re-attached to project networks.
  */
 class Reconcile extends Command
 {
@@ -24,7 +26,7 @@ class Reconcile extends Command
 
     protected $description = 'Detect stale jobs and crashed applications';
 
-    public function handle(DockerClient $docker, Notifier $notifier): int
+    public function handle(DockerClient $docker, Notifier $notifier, NetworkManager $networks): int
     {
         $staleAfter = (int) config('privatecloud.deploy.stale_after_seconds');
 
@@ -47,6 +49,14 @@ class Reconcile extends Command
             }
         } catch (Throwable) {
             return self::SUCCESS;
+        }
+
+        try {
+            if (($repaired = $networks->repair(Project::query()->whereNull('deleting_at')->get())) > 0) {
+                $this->info("Re-attached platform containers to {$repaired} project network(s).");
+            }
+        } catch (Throwable $e) {
+            report($e);
         }
 
         $projects = Project::query()->with('currentDeployment')->whereNull('deleting_at')

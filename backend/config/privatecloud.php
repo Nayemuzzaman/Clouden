@@ -100,6 +100,8 @@ return [
         // Path of the host's /proc. Inside the platform container the host /proc is
         // bind-mounted read-only at /host/proc.
         'proc_path' => env('PC_HOST_PROC', '/proc'),
+        // The control plane runs in a container, so the host name must be passed in.
+        'hostname' => env('PC_HOST_HOSTNAME'),
         // Path whose filesystem is reported as "server disk".
         'disk_path' => env('PC_HOST_DISK_PATH', env('PC_DATA_DIR', storage_path('privatecloud'))),
         // Days of metric history to keep. 30s samples * 3 days ~= 8.6k rows/series.

@@ -36,6 +36,39 @@ class NetworkManager
         }
     }
 
+    /**
+     * Re-attach platform containers to the networks of deployed projects. Needed after
+     * Caddy or the worker were recreated (upgrade, reboot); runs from the reconciler.
+     *
+     * @param  iterable<Project>  $projects
+     */
+    public function repair(iterable $projects): int
+    {
+        $repaired = 0;
+        foreach ($projects as $project) {
+            if ($project->current_deployment_id === null || $project->isDeleting()) {
+                continue;
+            }
+            $before = $this->attachments($project);
+            $this->prepare($project);
+            $repaired += $this->attachments($project) !== $before ? 1 : 0;
+        }
+
+        return $repaired;
+    }
+
+    private function attachments(Project $project): string
+    {
+        $names = [];
+        foreach (['caddy_container', 'worker_container', 'apps_db_container'] as $key) {
+            $container = (string) config('privatecloud.docker.'.$key);
+            $networks = $container !== '' && $this->docker->inspectContainer($container) !== null ? $this->docker->containerNetworks($container) : [];
+            $names[] = $key.':'.(in_array($project->networkName(), $networks, true) ? '1' : '0');
+        }
+
+        return implode(',', $names);
+    }
+
     public function attachDatabase(Project $project): void
     {
         $network = $project->networkName();

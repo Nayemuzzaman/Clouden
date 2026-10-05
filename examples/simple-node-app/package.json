@@ -1,0 +1,10 @@
+{
+  "name": "simple-node-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Example application for testing PrivateCloud deployments",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

@@ -109,7 +109,9 @@ class DockerClient
 
     public function removeContainer(string $id, bool $force = true): void
     {
-        $response = $this->request(60)->delete('/containers/'.rawurlencode($id), ['force' => $force ? 'true' : 'false', 'v' => 'false']);
+        // Note: DELETE parameters must go in the query string (a request body is ignored by Docker).
+        $response = $this->request(60)->withQueryParameters(['force' => $force ? 'true' : 'false', 'v' => 'false'])
+            ->delete('/containers/'.rawurlencode($id));
         if ($response->status() !== 404) {
             $this->json($response);
         }
@@ -258,7 +260,7 @@ class DockerClient
 
     public function removeImage(string $ref): void
     {
-        $response = $this->request(60)->delete('/images/'.rawurlencode($ref), ['force' => 'false', 'noprune' => 'false']);
+        $response = $this->request(60)->withQueryParameters(['force' => 'false', 'noprune' => 'false'])->delete('/images/'.rawurlencode($ref));
         if (! in_array($response->status(), [200, 404], true)) {
             $this->json($response);
         }

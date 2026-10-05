@@ -189,7 +189,7 @@ class HostMetrics
 
     private function hostname(): ?string
     {
-        return $this->read('sys/kernel/hostname') ?? (gethostname() ?: null);
+        return config('privatecloud.monitoring.hostname') ?: ($this->read('sys/kernel/hostname') ?? (gethostname() ?: null));
     }
 
     private function read(string $file): ?string

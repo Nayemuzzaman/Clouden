@@ -79,12 +79,19 @@ class SourceFetcher
         $git = ['git', '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', '-c', 'core.symlinks=true'];
 
         $log("Cloning {$repository->url} (branch {$repository->branch})");
-        $clone = $this->runner->run(
-            [...$git, 'clone', '--depth', '50', '--branch', $repository->branch, '--single-branch', '--no-tags', '--', $repository->url, $directory],
+        $runClone = fn (array $depth) => $this->runner->run(
+            [...$git, 'clone', ...$depth, '--branch', $repository->branch, '--single-branch', '--no-tags', '--', $repository->url, $directory],
             env: $env,
             timeout: $timeout,
             onLine: fn (string $s, string $line) => $line !== '' ? $log($line) : null,
         );
+        $clone = $runClone(['--depth', '50']);
+        if (! $clone->successful() && str_contains($clone->errorOutput, 'shallow')) {
+            // Some servers (e.g. git's "dumb" HTTP transport) cannot serve shallow clones.
+            $log('The server does not support shallow clones; downloading the full history');
+            File::deleteDirectory($directory);
+            $clone = $runClone([]);
+        }
         if (! $clone->successful()) {
             throw new SourceException($this->describeGitError($clone->errorOutput, $clone->timedOut));
         }
