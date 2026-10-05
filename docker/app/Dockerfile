@@ -51,6 +51,17 @@ WORKDIR /app
 COPY --from=vendor /app /app
 COPY --from=frontend /src/dist/ /app/public/
 
+# The base image gives frankenphp the cap_net_bind_service file capability (for
+# ports < 1024). It listens on 8000 here, and the containers run with all
+# capabilities dropped, under which the kernel refuses to execute a binary that
+# carries file capabilities: remove them.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends --reinstall libcap2-bin; \
+    setcap -r /usr/local/bin/frankenphp || true; \
+    test -z "$(getcap /usr/local/bin/frankenphp)"; \
+    rm -rf /var/lib/apt/lists/*
+
 RUN set -eux; \
     chmod +x /usr/local/bin/privatecloud-entrypoint; \
     rm -f /app/.env /app/database/*.sqlite; \
