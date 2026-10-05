@@ -21,7 +21,7 @@ interface SettingsData {
   thresholds: Thresholds
   metrics_retention_days: number
   backup_storage: { driver: string; off_server: boolean }
-  github: { connected: boolean; login?: string; name?: string | null; avatar_url?: string | null; scopes?: string | null; last_verified_at?: string | null }
+  github: { connected: boolean; login?: string; name?: string | null; avatar_url?: string | null; scopes?: string | null; last_verified_at?: string | null; token_rejected_at?: string | null }
 }
 
 function GitHubSettings({ settings }: { settings: SettingsData }) {
@@ -42,7 +42,7 @@ function GitHubSettings({ settings }: { settings: SettingsData }) {
     <Card>
       <CardHeader title={<span className="flex items-center gap-2"><GitHubIcon /> GitHub</span>} description="Needed for private repositories and automatic webhooks. The token is encrypted and never sent to the browser." />
       <CardBody className="space-y-4">
-        {gh.connected ? (
+        {gh.connected && (
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               {gh.avatar_url && <img src={gh.avatar_url} alt="" className="size-9 rounded-full" />}
@@ -50,7 +50,13 @@ function GitHubSettings({ settings }: { settings: SettingsData }) {
             </div>
             <Button variant="outline-danger" size="sm" loading={disconnect.isPending} onClick={() => disconnect.mutate()}>Disconnect</Button>
           </div>
-        ) : (
+        )}
+        {gh.connected && gh.token_rejected_at && (
+          <Callout tone="error" title="GitHub rejected the saved token">
+            Since {formatDateTime(gh.token_rejected_at)} GitHub has refused the token (expired or revoked). Deployments from GitHub fail until you connect a new token below.
+          </Callout>
+        )}
+        {(!gh.connected || gh.token_rejected_at) && (
           <>
             <Callout tone="info" title="Create a fine-grained personal access token">
               On GitHub: Settings → Developer settings → Personal access tokens → Fine-grained tokens. Give it access to the repositories you deploy with <strong>Contents: Read</strong> and <strong>Metadata: Read</strong>. Add <strong>Webhooks: Read and write</strong> to let PrivateCloud install auto-deploy webhooks.

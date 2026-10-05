@@ -3,6 +3,8 @@
 namespace App\Services\Source;
 
 use App\Models\GithubConnection;
+use App\Models\Setting;
+use App\Services\Notifier;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
@@ -14,13 +16,16 @@ use Illuminate\Support\Facades\Http;
  */
 class GitHubClient
 {
-    public function __construct(private readonly ?string $token = null) {}
+    public const TOKEN_REJECTED_SETTING = 'github.token_rejected_at';
+
+    /** @param bool $storedToken the token comes from the saved connection (not one being verified) */
+    public function __construct(private readonly ?string $token = null, private readonly bool $storedToken = false) {}
 
     public static function forConnection(?GithubConnection $connection = null): self
     {
         $connection ??= GithubConnection::current();
 
-        return new self($connection?->token);
+        return new self($connection?->token, $connection !== null);
     }
 
     public function hasToken(): bool
@@ -151,6 +156,19 @@ class GitHubClient
         }
     }
 
+    /** Remember that the saved token stopped working (expired/revoked) and tell the administrator once. */
+    private function recordRejectedToken(): void
+    {
+        try {
+            if (Setting::get(self::TOKEN_REJECTED_SETTING) === null) {
+                Setting::put(self::TOKEN_REJECTED_SETTING, now()->toIso8601String());
+                app(Notifier::class)->notify('github.token_rejected', 'GitHub token rejected', 'GitHub rejected the saved access token (expired or revoked). Deployments from GitHub fail until you connect a new token in Settings.', 'error', '/settings');
+            }
+        } catch (\Throwable) {
+            // Reporting must never hide the original error.
+        }
+    }
+
     private function assertFullName(string $fullName): void
     {
         if (! GitRefs::isValidFullName($fullName)) {
@@ -183,6 +201,9 @@ class GitHubClient
 
         if ($response->successful()) {
             return $response;
+        }
+        if ($response->status() === 401 && $this->storedToken && $this->hasToken()) {
+            $this->recordRejectedToken();
         }
 
         throw new SourceException(match (true) {

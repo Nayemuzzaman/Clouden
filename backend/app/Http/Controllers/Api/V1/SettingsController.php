@@ -42,6 +42,7 @@ class SettingsController extends Controller
                 'avatar_url' => $github->avatar_url,
                 'scopes' => $github->scopes,
                 'last_verified_at' => $github->last_verified_at?->toIso8601String(),
+                'token_rejected_at' => Setting::get(GitHubClient::TOKEN_REJECTED_SETTING),
             ] : ['connected' => false],
         ]);
     }
@@ -91,6 +92,7 @@ class SettingsController extends Controller
             'last_verified_at' => now(),
         ]);
         Cache::forget('privatecloud:github-repos');
+        Setting::query()->whereKey(GitHubClient::TOKEN_REJECTED_SETTING)->delete();
         $this->audit->log('github.connect', null, 'success', ['login' => $user['login']], $user['login']);
 
         return response()->json(['connected' => true, 'login' => $user['login']]);
@@ -100,6 +102,7 @@ class SettingsController extends Controller
     {
         GithubConnection::query()->delete();
         Cache::forget('privatecloud:github-repos');
+        Setting::query()->whereKey(GitHubClient::TOKEN_REJECTED_SETTING)->delete();
         $this->audit->log('github.disconnect');
 
         return response()->json(['connected' => false]);
