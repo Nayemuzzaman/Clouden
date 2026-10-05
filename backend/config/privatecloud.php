@@ -130,5 +130,11 @@ return [
     'security' => [
         // Minutes a password confirmation stays valid for revealing secrets.
         'password_confirmation_minutes' => (int) env('PC_PASSWORD_CONFIRM_MINUTES', 15),
+        // "Remember me" keeps the administrator signed in for at most this many days
+        // (Laravel's default would be about 400 days).
+        'remember_days' => (int) env('PC_REMEMBER_DAYS', 14),
+        // Set only by docker-compose.dev.yml. Turns production configuration errors
+        // (debug mode, plain HTTP, insecure git URLs, root user) into warnings.
+        'dev_mode' => (bool) env('PC_DEV_MODE', false),
     ],
 ];

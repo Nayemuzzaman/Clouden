@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 /**
  * @property int $id
@@ -41,5 +43,23 @@ class User extends Authenticatable
     public function isAdmin(): bool
     {
         return $this->role === self::ROLE_ADMIN;
+    }
+
+    /**
+     * Sign this user out everywhere except (optionally) the given session:
+     * stored sessions are deleted and the "remember me" token is rotated, so
+     * neither an old session cookie nor an old remember cookie works again.
+     */
+    public function endOtherSessions(?string $keepSessionId = null): void
+    {
+        $this->forceFill(['remember_token' => Str::random(60)])->save();
+
+        if (config('session.driver') === 'database') {
+            DB::connection(config('session.connection'))
+                ->table((string) config('session.table', 'sessions'))
+                ->where('user_id', $this->id)
+                ->when($keepSessionId !== null, fn ($q) => $q->where('id', '!=', $keepSessionId))
+                ->delete();
+        }
     }
 }

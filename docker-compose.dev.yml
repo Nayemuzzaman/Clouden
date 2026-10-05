@@ -2,12 +2,18 @@
 #  - plain HTTP, no certificates
 #  - Caddy on http://localhost:8088, API on http://localhost:8080 (for the Vite dev server)
 #  - insecure git URLs allowed (for the local git fixture used by the e2e test)
+#  - PC_DEV_MODE turns the production configuration check into warnings; it is
+#    set only here, so a development .env never starts with the production file
+#
+# Never use this file on a server.
 services:
   app:
     user: "0:0"
+    cap_drop: !reset []
     environment:
       APP_ENV: local
       APP_DEBUG: "true"
+      PC_DEV_MODE: "true"
       PC_AUTO_HTTPS: "off"
       PC_ALLOW_INSECURE_GIT: "true"
       SESSION_SECURE_COOKIE: "false"
@@ -15,13 +21,16 @@ services:
       - "127.0.0.1:8080:8000"
   worker:
     user: "0:0"
-    environment: { APP_ENV: local, PC_AUTO_HTTPS: "off", PC_ALLOW_INSECURE_GIT: "true" }
+    cap_drop: !reset []
+    environment: { APP_ENV: local, PC_DEV_MODE: "true", PC_AUTO_HTTPS: "off", PC_ALLOW_INSECURE_GIT: "true" }
   tasks:
     user: "0:0"
-    environment: { APP_ENV: local, PC_AUTO_HTTPS: "off", PC_ALLOW_INSECURE_GIT: "true" }
+    cap_drop: !reset []
+    environment: { APP_ENV: local, PC_DEV_MODE: "true", PC_AUTO_HTTPS: "off", PC_ALLOW_INSECURE_GIT: "true" }
   scheduler:
     user: "0:0"
-    environment: { APP_ENV: local, PC_AUTO_HTTPS: "off", PC_ALLOW_INSECURE_GIT: "true" }
+    cap_drop: !reset []
+    environment: { APP_ENV: local, PC_DEV_MODE: "true", PC_AUTO_HTTPS: "off", PC_ALLOW_INSECURE_GIT: "true" }
   platform-db:
     ports: ["127.0.0.1:15432:5432"]
   apps-db:

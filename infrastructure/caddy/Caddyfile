@@ -5,12 +5,15 @@
 # - Imports one generated file per project from /etc/caddy/sites. Those files are
 #   written by the control plane; do not edit them by hand.
 # - The admin API listens on localhost inside this container only.
+#
+# Caddy is the edge: it does NOT trust X-Forwarded-For from clients, and always
+# passes the address it sees to the API. (Trusting private ranges here would let
+# clients spoof their IP, because Docker's userland proxy makes IPv6 clients
+# appear to come from the private bridge gateway.) If you put a CDN or proxy in
+# front, add "servers { trusted_proxies static <its ranges> }" below.
 {
 	admin localhost:2019
 	{$PC_CADDY_ACME_EMAIL_OPTION}
-	servers {
-		trusted_proxies static private_ranges
-	}
 }
 
 {$PC_DASHBOARD_ADDRESS} {

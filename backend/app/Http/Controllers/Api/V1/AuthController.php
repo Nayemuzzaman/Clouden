@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Middleware\RequireRecentPassword;
 use App\Models\User;
 use App\Services\Audit\AuditLogger;
+use Illuminate\Auth\SessionGuard;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -25,7 +26,18 @@ class AuthController extends Controller
             'remember' => ['boolean'],
         ]);
 
-        if (! Auth::guard('web')->attempt(['email' => $credentials['email'], 'password' => $credentials['password']], $request->boolean('remember'))) {
+        $guard = Auth::guard('web');
+        if ($guard instanceof SessionGuard) {
+            $guard->setRememberDuration((int) config('privatecloud.security.remember_days') * 1440);
+        }
+
+        if (! User::query()->where('email', $credentials['email'])->exists()) {
+            // Spend the same time as a real password check so response timing does
+            // not reveal whether the email belongs to an account.
+            Hash::make($credentials['password']);
+        }
+
+        if (! $guard->attempt(['email' => $credentials['email'], 'password' => $credentials['password']], $request->boolean('remember'))) {
             $this->audit->log('auth.login_failed', null, 'failure', ['email' => $credentials['email']], $credentials['email']);
 
             throw ValidationException::withMessages(['email' => 'These credentials do not match our records.']);
@@ -76,8 +88,8 @@ class AuthController extends Controller
             'password' => ['required', 'confirmed', 'max:1024', Password::min(12)->letters()->numbers()],
         ]);
         $request->user()->update(['password' => $request->input('password')]);
-        Auth::logoutOtherDevices($request->input('password'));
         $request->session()->regenerate();
+        $request->user()->endOtherSessions($request->session()->getId());
         $this->audit->log('auth.password_changed', $request->user());
 
         return response()->json(['message' => 'Password changed.']);
