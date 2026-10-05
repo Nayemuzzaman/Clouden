@@ -1,0 +1,9 @@
+# Local configuration and data
+/.env
+/.data/
+*.log
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
