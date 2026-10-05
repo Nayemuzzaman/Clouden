@@ -330,6 +330,14 @@ class HardeningTest extends TestCase
         $this->assertTrue(Cache::lock('laravel-queue-overlap:project:42', 60)->get());
     }
 
+    public function test_idle_reports_running_work(): void
+    {
+        $this->artisan('privatecloud:idle')->expectsOutput('idle')->assertExitCode(0);
+        $project = $this->project(['slug' => 'shop']);
+        Deployment::factory()->create(['project_id' => $project->id, 'status' => DeploymentStatus::Building]);
+        $this->artisan('privatecloud:idle')->expectsOutput('running: 1 deployments')->assertExitCode(1);
+    }
+
     // --------------------------------------------------------------- disk usage
 
     public function test_backup_refuses_to_start_without_enough_free_disk(): void
