@@ -76,7 +76,7 @@ class SourceFetcher
 
         $timeout = (int) config('privatecloud.deploy.clone_timeout');
         $env = ['GIT_TERMINAL_PROMPT' => '0', 'GIT_CONFIG_NOSYSTEM' => '1'];
-        $git = ['git', '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', '-c', 'core.symlinks=true'];
+        $git = [...self::gitBase(), '-c', 'core.symlinks=true'];
 
         $log("Cloning {$repository->url} (branch {$repository->branch})");
         $runClone = fn (array $depth) => $this->runner->run(
@@ -130,7 +130,7 @@ class SourceFetcher
         }
 
         $result = $this->runner->run(
-            ['git', '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', 'ls-remote', '--heads', '--', $url, 'refs/heads/'.$branch],
+            [...self::gitBase(), 'ls-remote', '--heads', '--', $url, 'refs/heads/'.$branch],
             env: ['GIT_TERMINAL_PROMPT' => '0', 'GIT_CONFIG_NOSYSTEM' => '1'],
             timeout: 60,
         );
@@ -142,6 +142,24 @@ class SourceFetcher
         }
 
         return $m[1];
+    }
+
+    /**
+     * git with every transport disabled except https (plus http in development).
+     * git applies the same allow-list to HTTP redirects, so a repository URL cannot
+     * redirect the clone to http://, file:// or another transport; system and
+     * credential-helper configuration is ignored.
+     *
+     * @return list<string>
+     */
+    public static function gitBase(): array
+    {
+        $base = ['git', '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'credential.helper=', '-c', 'http.sslVerify=true'];
+        if (config('privatecloud.deploy.allow_insecure_git')) {
+            array_push($base, '-c', 'protocol.http.allow=always');
+        }
+
+        return $base;
     }
 
     private function describeGitError(string $stderr, bool $timedOut): string

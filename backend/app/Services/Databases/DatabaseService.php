@@ -47,6 +47,12 @@ class DatabaseService
         try {
             $this->provisioner->create($database->name, $database->username, $database->password);
             $database->update(['status' => 'ready', 'last_error' => null]);
+        } catch (DatabaseNameTaken $e) {
+            // Nothing was created; do not keep a record that "retry" could use to adopt the other data.
+            $database->delete();
+            $this->audit->log('database.created', null, 'failure', ['name' => $name, 'error' => $e->getMessage()], $name);
+
+            throw new DomainException($e->getMessage());
         } catch (Throwable $e) {
             $database->update(['status' => 'failed', 'last_error' => $e->getMessage()]);
             $this->audit->log('database.created', $database, 'failure', ['error' => $e->getMessage()]);
@@ -66,7 +72,7 @@ class DatabaseService
     public function retry(ProjectDatabase $database): ProjectDatabase
     {
         try {
-            $this->provisioner->create($database->name, $database->username, $database->password);
+            $this->provisioner->create($database->name, $database->username, $database->password, adoptExisting: true);
             $database->update(['status' => 'ready', 'last_error' => null]);
             if ($database->project) {
                 $this->connectToProject($database, $database->project);

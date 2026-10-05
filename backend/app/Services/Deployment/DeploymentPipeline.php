@@ -20,6 +20,7 @@ use App\Services\Source\SourceFetcher;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use InvalidArgumentException;
 use Throwable;
 
 /**
@@ -84,6 +85,7 @@ class DeploymentPipeline
         $buildDir = null;
         $candidate = null;
         $routed = false;
+        $succeeded = false;
 
         try {
             $image = match (true) {
@@ -132,6 +134,7 @@ class DeploymentPipeline
                 }
             });
             $candidate = null; // it is production now: never clean it up below
+            $succeeded = true;
             $log->system("Deployment #{$deployment->number} is live", 'success');
 
             // ---- Retire the previous container after a short drain period
@@ -174,6 +177,9 @@ class DeploymentPipeline
             if ($buildDir !== null) {
                 File::deleteDirectory($buildDir);
             }
+            if (! $succeeded) {
+                $this->removeUnusedBuiltImage($project, $deployment->fresh(), $log);
+            }
             Cache::forget(self::cancelKey($deployment));
             $log->flush();
         }
@@ -209,14 +215,18 @@ class DeploymentPipeline
         $deployment->update(['build_started_at' => now()]);
         $tag = config('privatecloud.docker.prefix').'-'.$project->slug.':'.$deployment->number;
 
-        $result = $this->builder->build(
-            $context,
-            $dockerfile,
-            $tag,
-            ['privatecloud.managed' => 'true', 'privatecloud.project' => (string) $project->id, 'privatecloud.deployment' => (string) $deployment->id, 'privatecloud.commit' => $commit->sha],
-            $this->environment->buildArgs($project),
-            fn (string $line) => $log->write('build', $line),
-        );
+        try {
+            $result = $this->builder->build(
+                $context,
+                $dockerfile,
+                $tag,
+                ['privatecloud.managed' => 'true', 'privatecloud.project' => (string) $project->id, 'privatecloud.deployment' => (string) $deployment->id, 'privatecloud.commit' => $commit->sha],
+                $this->environment->buildArgs($project),
+                fn (string $line) => $log->write('build', $line),
+            );
+        } catch (InvalidArgumentException $e) {
+            throw new DeploymentFailed('building', $e->getMessage());
+        }
         $deployment->update(['build_finished_at' => now()]);
 
         if (! $result['success']) {
@@ -263,10 +273,18 @@ class DeploymentPipeline
         if ($source === null || ! $source->image_tag) {
             throw new DeploymentFailed('starting', 'The deployment to roll back to no longer exists.');
         }
-        if ($this->docker->inspectImage($source->image_tag) === null) {
+        if ($source->status !== DeploymentStatus::Success && $deployment->type === Deployment::TYPE_ROLLBACK) {
+            throw new DeploymentFailed('starting', "Deployment #{$source->number} did not succeed, so it cannot be rolled back to.");
+        }
+        $image = $this->docker->inspectImage($source->image_tag);
+        if ($image === null) {
             $source->update(['image_available' => false]);
 
             throw new DeploymentFailed('starting', "The image of deployment #{$source->number} has been removed (image retention), so it cannot be reused. Deploy the commit again instead.");
+        }
+        // The tag must still point at the exact image that passed its health check.
+        if ($source->image_id && ($image['Id'] ?? null) !== $source->image_id) {
+            throw new DeploymentFailed('starting', "The image tagged {$source->image_tag} is no longer the image deployed by #{$source->number}, so it was not used. Deploy the commit again instead.");
         }
         $deployment->update([
             'image_tag' => $source->image_tag,
@@ -354,11 +372,13 @@ class DeploymentPipeline
             }
         }
 
+        // Error messages can echo build output or application output: never store secret values.
+        $reason = $log->redact($reason);
         $deployment->update([
             'status' => DeploymentStatus::Failed,
             'failure_stage' => $stage,
             'failure_reason' => mb_substr($reason, 0, 2000),
-            'failure_detail' => $detail,
+            'failure_detail' => $detail !== null ? $log->redact($detail) : null,
             'finished_at' => now(),
         ]);
         $log->system('Deployment failed: '.$reason, 'error');
@@ -376,6 +396,31 @@ class DeploymentPipeline
         $project->refresh();
         if ($project->status === ProjectStatus::Deploying || $project->current_deployment_id === null) {
             $project->update(['status' => $project->current_deployment_id ? ProjectStatus::Running : ProjectStatus::Failed]);
+        }
+    }
+
+    /**
+     * A failed deployment's freshly built image can never be rolled back to, so it
+     * is removed right away (Docker refuses if a container still uses it). Images
+     * of other deployments (rollback/redeploy reuse them) and pulled images are
+     * never touched.
+     */
+    private function removeUnusedBuiltImage(Project $project, ?Deployment $deployment, DeploymentLogWriter $log): void
+    {
+        if ($deployment === null || $deployment->type !== Deployment::TYPE_DEPLOY || $project->source_type === Project::SOURCE_IMAGE
+            || ! $deployment->image_tag || ! $deployment->image_available) {
+            return;
+        }
+        $expected = config('privatecloud.docker.prefix').'-'.$project->slug.':'.$deployment->number;
+        if ($deployment->image_tag !== $expected) {
+            return;
+        }
+        try {
+            $this->docker->removeImage($deployment->image_tag);
+            $deployment->update(['image_available' => false]);
+            $log->system("Removed the image of this failed deployment ({$deployment->image_tag})");
+        } catch (Throwable) {
+            // In use or already gone; image retention cleans it up later.
         }
     }
 

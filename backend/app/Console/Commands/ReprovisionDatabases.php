@@ -25,7 +25,7 @@ class ReprovisionDatabases extends Command
         foreach (ProjectDatabase::query()->orderBy('name')->get() as $database) {
             try {
                 $existed = $provisioner->exists($database->name);
-                $provisioner->create($database->name, $database->username, $database->password);
+                $provisioner->create($database->name, $database->username, $database->password, adoptExisting: true);
                 $database->update(['status' => 'ready', 'last_error' => null]);
                 $this->info(sprintf('%-30s %s', $database->name, $existed ? 'ok (already existed, password re-applied)' : 'created (empty — restore a backup into it)'));
             } catch (Throwable $e) {

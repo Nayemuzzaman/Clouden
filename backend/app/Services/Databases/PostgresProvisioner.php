@@ -30,7 +30,13 @@ class PostgresProvisioner
         }
     }
 
-    public function create(string $database, string $username, string $password): void
+    /**
+     * @param  bool  $adoptExisting  false for a NEW database: an existing role or
+     *                               database with the same name (e.g. kept from a deleted project) is
+     *                               never taken over. true only when re-provisioning the same record
+     *                               (retry after a partial failure, disaster recovery).
+     */
+    public function create(string $database, string $username, string $password, bool $adoptExisting = false): void
     {
         $this->assertNames($database, $username);
         $pdo = $this->admin();
@@ -38,6 +44,9 @@ class PostgresProvisioner
 
         try {
             $roleExists = $this->scalar('SELECT 1 FROM pg_roles WHERE rolname = ?', [$username]);
+            if (! $adoptExisting && ($roleExists || $this->scalar('SELECT 1 FROM pg_database WHERE datname = ?', [$database]))) {
+                throw new DatabaseNameTaken("A database or role named \"{$database}\" already exists on the PostgreSQL server (possibly kept from a deleted project). Choose another name; existing data is never taken over.");
+            }
             $pwd = $pdo->quote($password);
             if ($roleExists) {
                 $pdo->exec('ALTER ROLE '.Identifier::quote($username)." WITH LOGIN PASSWORD {$pwd}");

@@ -15,7 +15,9 @@ use Throwable;
  * - The HMAC-SHA256 signature is verified with a constant-time comparison
  *   before the payload is parsed.
  * - Each delivery ID is stored with a unique index, so GitHub redeliveries and
- *   duplicate requests cannot create a second deployment.
+ *   duplicate requests cannot create a second deployment. The SHA-256 of the
+ *   signed body is unique per project too, so a captured delivery replayed
+ *   with a different (unsigned) delivery ID is rejected as well.
  * - Pushes to other branches are ignored.
  */
 class WebhookHandler
@@ -49,6 +51,7 @@ class WebhookHandler
                 'project_id' => $project->id,
                 'provider' => 'github',
                 'delivery_id' => $delivery,
+                'payload_sha256' => hash('sha256', $payload),
                 'event' => mb_substr($event, 0, 48),
                 'ref' => is_string($ref) ? mb_substr($ref, 0, 255) : null,
                 'commit_sha' => is_string($sha) && GitRefs::isValidSha($sha) ? $sha : null,

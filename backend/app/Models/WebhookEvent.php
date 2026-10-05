@@ -17,5 +17,5 @@ class WebhookEvent extends Model
 {
     public const UPDATED_AT = null;
 
-    protected $fillable = ['project_id', 'provider', 'delivery_id', 'event', 'ref', 'commit_sha', 'status', 'reason', 'deployment_id'];
+    protected $fillable = ['project_id', 'provider', 'delivery_id', 'payload_sha256', 'event', 'ref', 'commit_sha', 'status', 'reason', 'deployment_id'];
 }

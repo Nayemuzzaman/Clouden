@@ -64,7 +64,13 @@ class ProjectDeleter
             // 5. GitHub webhook
             $repository = $project->repository;
             if ($repository?->webhook_id && $repository->full_name) {
-                GitHubClient::forConnection()->deleteWebhook($repository->full_name, (int) $repository->webhook_id);
+                try {
+                    GitHubClient::forConnection()->deleteWebhook($repository->full_name, (int) $repository->webhook_id);
+                } catch (Throwable $e) {
+                    // GitHub being unreachable must not block deleting the project; the
+                    // orphaned webhook only receives 404s from now on.
+                    $warnings[] = 'GitHub webhook was not removed ('.$e->getMessage().'); delete it in the repository settings';
+                }
             }
 
             // 6. Optional: databases

@@ -294,10 +294,16 @@ class DockerClient
 
     // --------------------------------------------------------------- volumes
 
-    /** @param array<string, string> $labels */
-    public function ensureVolume(string $name, array $labels = []): void
+    /**
+     * Create the volume if it does not exist. Docker returns the EXISTING volume
+     * (with its original labels) when the name is already taken.
+     *
+     * @param  array<string, string>  $labels
+     * @return array<string, mixed>
+     */
+    public function ensureVolume(string $name, array $labels = []): array
     {
-        $this->json($this->request(20)->post('/volumes/create', ['Name' => $name, 'Labels' => (object) $labels]));
+        return $this->json($this->request(20)->post('/volumes/create', ['Name' => $name, 'Labels' => (object) $labels]));
     }
 
     public function removeVolume(string $name): void

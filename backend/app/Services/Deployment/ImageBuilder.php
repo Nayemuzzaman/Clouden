@@ -13,7 +13,14 @@ use InvalidArgumentException;
  */
 class ImageBuilder
 {
-    private const RESERVED_BUILD_ARGS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_BUILDKIT', 'BUILDKIT_PROGRESS'];
+    /**
+     * Build-argument names become environment variables of the docker CLI
+     * process, so names that change how that process (or the dynamic loader,
+     * TLS, proxies, git or the Go runtime) behaves are refused.
+     */
+    private const RESERVED_BUILD_ARGS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'SHELL', 'USER', 'IFS', 'ENV', 'BASH_ENV', 'GODEBUG', 'GOFLAGS', 'GOTRACEBACK', 'GOMAXPROCS', 'GOGC', 'GOMEMLIMIT'];
+
+    private const RESERVED_BUILD_ARG_PREFIXES = ['DOCKER_', 'BUILDKIT_', 'BUILDX_', 'COMPOSE_', 'LD_', 'DYLD_', 'SSL_', 'CURL_', 'GIT_', 'XDG_', 'OTEL_', 'NO_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'FTP_PROXY'];
 
     public function __construct(private readonly CommandRunner $runner) {}
 
@@ -42,8 +49,8 @@ class ImageBuilder
             'BUILDKIT_PROGRESS' => 'plain',
         ];
         foreach ($buildArgs as $key => $value) {
-            if (! preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $key) || in_array(strtoupper($key), self::RESERVED_BUILD_ARGS, true)) {
-                throw new InvalidArgumentException("Build argument {$key} is not allowed.");
+            if (! self::isAllowedBuildArg($key)) {
+                throw new InvalidArgumentException("The variable {$key} cannot be used at build time because its name is reserved for the build tooling. Rename it or turn off \"available at build time\".");
             }
             $command[] = '--build-arg';
             $command[] = $key; // value is read from the environment by the docker CLI
@@ -66,5 +73,23 @@ class ImageBuilder
         );
 
         return ['success' => $result->successful(), 'lines' => $lines, 'timed_out' => $result->timedOut];
+    }
+
+    public static function isAllowedBuildArg(string $key): bool
+    {
+        if (! preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $key)) {
+            return false;
+        }
+        $upper = strtoupper($key);
+        if (in_array($upper, self::RESERVED_BUILD_ARGS, true)) {
+            return false;
+        }
+        foreach (self::RESERVED_BUILD_ARG_PREFIXES as $prefix) {
+            if (str_starts_with($upper, $prefix)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

@@ -28,6 +28,11 @@ class DeploymentLogWriter
         $this->lastFlush = microtime(true);
     }
 
+    public function redact(string $text): string
+    {
+        return $this->redactor->redact($text);
+    }
+
     public function system(string $line, string $level = 'info'): void
     {
         $this->write('system', $line, $level);

@@ -7,6 +7,7 @@ use App\Http\Resources\EnvironmentVariableResource;
 use App\Models\EnvironmentVariable;
 use App\Models\Project;
 use App\Services\Audit\AuditLogger;
+use App\Services\Deployment\ImageBuilder;
 use App\Services\Environment\DotenvParser;
 use App\Services\Environment\EnvironmentKey;
 use App\Services\Environment\EnvironmentService;
@@ -40,6 +41,7 @@ class EnvironmentController extends Controller
         if ($project->environmentVariables()->where('key', $data['key'])->exists()) {
             throw ValidationException::withMessages(['key' => 'This variable already exists. Edit it instead.']);
         }
+        $this->ensureBuildArgAllowed($data['key'], (bool) ($data['available_at_build'] ?? false));
         $variable = $this->environment->set($project, $data['key'], (string) ($data['value'] ?? ''), $data['is_secret'] ?? null, false, $data['available_at_build'] ?? false);
         $this->audit->log('environment.created', $project, metadata: ['key' => $variable->key]);
 
@@ -62,6 +64,7 @@ class EnvironmentController extends Controller
             $variable->is_secret = $data['is_secret'];
         }
         if (array_key_exists('available_at_build', $data)) {
+            $this->ensureBuildArgAllowed($variable->key, (bool) $data['available_at_build']);
             $variable->available_at_build = $data['available_at_build'];
         }
         $variable->save();
@@ -128,6 +131,13 @@ class EnvironmentController extends Controller
         }
 
         return $data;
+    }
+
+    private function ensureBuildArgAllowed(string $key, bool $availableAtBuild): void
+    {
+        if ($availableAtBuild && ! ImageBuilder::isAllowedBuildArg($key)) {
+            throw ValidationException::withMessages(['available_at_build' => "{$key} is reserved for the build tooling and cannot be passed to the build. It is still available to the running application."]);
+        }
     }
 
     private function ensureBelongs(Project $project, EnvironmentVariable $variable): void

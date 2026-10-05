@@ -21,9 +21,22 @@ class ContainerLauncher
         return config('privatecloud.docker.prefix').'-'.$project->slug.'-'.$deployment->number;
     }
 
+    /**
+     * Docker volume name for a project volume: pc-vol-<project id>-<slug>_<volume>.
+     *
+     * The project id keeps names unique even when a deleted project's slug is
+     * reused (its retained volumes are never attached to the new project), and
+     * "_" (which neither slugs nor volume names may contain) makes the split
+     * unambiguous: project "a" + volume "b-c" and project "a-b" + volume "c"
+     * can no longer map to the same Docker volume.
+     */
     public static function volumeName(Project $project, string $volume): string
     {
-        return config('privatecloud.docker.prefix').'-vol-'.$project->slug.'-'.$volume;
+        if ($project->id === null) {
+            throw new \LogicException('The project must be saved before naming its volumes.');
+        }
+
+        return config('privatecloud.docker.prefix').'-vol-'.$project->id.'-'.$project->slug.'_'.$volume;
     }
 
     public function launch(Project $project, Deployment $deployment, string $image): string
@@ -37,7 +50,11 @@ class ContainerLauncher
 
         $mounts = [];
         foreach ($project->volumes as $volume) {
-            $this->docker->ensureVolume($volume->docker_name, ['privatecloud.managed' => 'true', 'privatecloud.project' => (string) $project->id]);
+            $existing = $this->docker->ensureVolume($volume->docker_name, ['privatecloud.managed' => 'true', 'privatecloud.project' => (string) $project->id]);
+            $owner = $existing['Labels']['privatecloud.project'] ?? null;
+            if ($owner !== null && $owner !== (string) $project->id) {
+                throw new DeploymentFailed('starting', "The Docker volume {$volume->docker_name} belongs to another project, so it was not mounted.");
+            }
             $mounts[] = ['Type' => 'volume', 'Source' => $volume->docker_name, 'Target' => $volume->mount_path];
         }
 
