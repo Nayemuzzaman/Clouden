@@ -88,6 +88,17 @@ class DatabaseIntegrationTest extends TestCase
         $this->assertGreaterThanOrEqual(32, strlen($shop->password));
     }
 
+    public function test_reprovision_recreates_missing_databases_idempotently(): void
+    {
+        $shop = $this->create('it_shop');
+        app(PostgresProvisioner::class)->drop('it_shop', 'it_shop'); // simulate a new, empty server
+
+        $this->artisan('privatecloud:reprovision-databases')->expectsOutputToContain('created')->assertSuccessful();
+        $this->connect('it_shop', 'it_shop', $shop->password)->query('SELECT 1');
+
+        $this->artisan('privatecloud:reprovision-databases')->expectsOutputToContain('already existed')->assertSuccessful();
+    }
+
     public function test_reset_credentials_and_delete(): void
     {
         $shop = $this->create('it_shop');
