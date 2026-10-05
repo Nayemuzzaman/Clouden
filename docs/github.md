@@ -3,22 +3,44 @@
 PrivateCloud deploys from GitHub using a personal access token stored encrypted on your
 server. The token never reaches the browser.
 
+The normal deployment path is:
+
+```
+GitHub repository → selected branch → exact commit (tarball) → Dockerfile → docker build
+→ new container next to the live one → health check → Caddy routing → live
+```
+
+> **V1 uses a personal access token (PAT).** A GitHub App — short-lived installation
+> tokens, permissions granted per repository, no long-lived secret on the server — is the
+> planned improvement. Until then, use a fine-grained token limited to the repositories
+> you deploy, with an expiry date, and rotate it.
+
 ## Connect GitHub
 
 1. On GitHub: **Settings → Developer settings → Personal access tokens → Fine-grained
    tokens → Generate new token**.
 2. *Repository access*: select the repositories you want to deploy (or all).
-3. *Repository permissions*:
-   - **Contents: Read-only** — download source code
-   - **Metadata: Read-only** — list repositories and branches (always required)
-   - **Webhooks: Read and write** — optional, lets PrivateCloud create the auto-deploy
-     webhook for you
-4. Copy the token, open **PrivateCloud → Settings → GitHub**, paste it and click
+3. *Expiration*: set one (e.g. 90 days) and put a reminder in your calendar.
+4. *Repository permissions* — the minimum:
+
+   | Permission | Access | Needed for |
+   | --- | --- | --- |
+   | **Metadata** | Read-only | listing repositories and branches (always required by GitHub) |
+   | **Contents** | Read-only | resolving commits and downloading the source |
+   | **Webhooks** | Read and write | *optional*: creating/removing the auto-deploy webhook for you |
+
+   Nothing else (no *Administration*, *Actions*, *Secrets*, write access to contents …).
+5. Copy the token, open **PrivateCloud → Settings → GitHub**, paste it and click
    **Connect GitHub** (your password is confirmed first).
 
 PrivateCloud verifies the token immediately (`GET /user`) and shows the connected account.
-Fine-grained tokens expire; when one does, deployments fail with "GitHub rejected the
-access token" — create a new token and connect again.
+
+**When the token stops working** (expired, revoked, or the repository was removed from
+its access): deployments fail at *Fetching source* with "GitHub rejected the access
+token" and the live version keeps running. The first rejection is recorded, you get one
+notification, and *Settings → GitHub* shows "GitHub rejected the saved token" with a form
+to connect a new one. Connecting a new token clears the warning. Project deletion still
+completes if the webhook cannot be removed (you are told to delete it on GitHub).
 
 Classic tokens with the `repo` scope (and `admin:repo_hook` for webhooks) also work, but
 grant much broader access.

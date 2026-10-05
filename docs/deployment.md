@@ -24,10 +24,15 @@ Your container must:
 | Queued | The deployment waits for the worker and for any other job on the same project. A newer deploy request replaces one that has not started yet. | — |
 | Fetching source | The branch is resolved to a commit and that exact commit is downloaded. | "Repository not found", "token rejected", "GitHub could not be reached" … |
 | Building | `docker build` with BuildKit. Output is streamed live. Before building, at least 2 GB of free disk is required (configurable). | The failing step and error line are shown, e.g. *Step: `npm run build` — Error: Module not found*. |
-| Starting | A new container starts **next to** the live one, with the project's limits and environment. | Removed; live version untouched. |
+| Starting | A new container starts **next to** the live one, with the project's limits and environment. | Removed (with the image this deployment built); live version untouched. |
 | Health checking | HTTP request (or "container keeps running") with retries. If the process exits or restarts, the check stops immediately. | The container's last 100 log lines are attached; the container is removed. |
 | Routing | Caddy is pointed at the new container and reloaded gracefully. If Caddy rejects the configuration, the previous configuration is restored. | Live version untouched. |
 | Successful | The previous container is stopped after a 5 second drain period. Its image is kept for rollback. | — |
+
+If the deployment worker is restarted or killed during any stage (server update, reboot,
+out of memory), the deployment is marked *failed — interrupted* as soon as the worker is
+back, the half-started container is removed and the live version is untouched. Deploy
+again.
 
 **About zero downtime.** The previous version keeps serving until the new one is healthy
 and routed, and Caddy's reload lets in-flight requests finish. In testing, 346 requests
@@ -40,7 +45,8 @@ can break it before the switch. Prefer backwards-compatible migrations.
 
 *Deployments → Rollback* on any successful deployment whose image is still retained
 creates a new deployment of type **rollback** that reuses that image (no rebuild), health
-checks it and switches traffic. History is never rewritten. By default the images of the
+checks it and switches traffic. The image must still be the exact one (same image id)
+that passed its health check; if the tag was overwritten, the rollback is refused. History is never rewritten. By default the images of the
 last 5 successful deployments are kept (*Settings → Resources → Images kept for
 rollback*). Rollback does not roll back your **database** — restore a backup for that.
 
@@ -57,6 +63,10 @@ values **at build time**: mark those with **B** on the Environment page and decl
 in your Dockerfile with `ARG NAME`. Values are handed to Docker through the process
 environment (never on the command line), but anything you `ARG` can end up in image
 metadata — do not mark secrets for build time.
+
+Names that would change how the build tooling itself runs cannot be used at build time:
+`PATH`, `HOME`, `LD_*`, `DOCKER_*`, `BUILDKIT_*`, `BUILDX_*`, `GIT_*`, `SSL_*`,
+`*_PROXY`, `GODEBUG` and similar. They remain available to the running application.
 
 ## Resource limits
 

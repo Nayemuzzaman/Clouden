@@ -1,12 +1,18 @@
 # Backups
 
+> **Local backups do not protect against losing the server.** By default every backup is
+> stored on the same VPS as the data it protects. If the instance is deleted, its disk
+> fails, or the account is compromised, the backups are gone too. Copy them off the server
+> (see [Keep copies off the server](#keep-copies-off-the-server)) before you rely on
+> PrivateCloud for anything important.
+
 ## What is backed up
 
 | Kind | How | File |
 | --- | --- | --- |
 | Application database | `pg_dump --format=custom` (compressed) | `backups/databases/<db>/<timestamp>-<id>.dump` |
 | Volume (persistent files) | `tar -czf` in a short-lived helper container with the volume mounted read-only and no network | `backups/volumes/<project>/<volume>/<timestamp>-<id>.tar.gz` |
-| PrivateCloud itself | `scripts/backup-platform.sh`: platform database dump + copy of `.env` | `backups/platform/` |
+| PrivateCloud itself | `scripts/backup-platform.sh` (nightly at 03:15, scheduled by the installer in `/etc/cron.d/privatecloud`): platform database dump + copy of `.env`, root-only | `backups/platform/` |
 
 Paths are relative to the data directory (default `/var/lib/privatecloud`).
 
@@ -21,7 +27,12 @@ after:
    archives),
 4. its SHA-256 checksum and size were recorded.
 
-A failed backup deletes its partial file and sends a notification.
+A failed backup deletes its partial file and sends a notification. Before starting, a
+backup checks that the disk has room for the current size of the database or volume plus
+`PC_BACKUP_MIN_FREE_DISK_MB` (default 1 GB) and fails with a clear message otherwise. A
+backup interrupted by a worker restart is marked failed and its partial file removed when
+the worker starts again. The platform backup script writes to a temporary file and only
+keeps it after `pg_restore --list` verified it.
 
 Volume backups are taken while the application runs. For applications that write
 constantly (e.g. an embedded SQLite database), stop the application before backing up
@@ -60,6 +71,12 @@ confirm your password. Then:
 Progress is shown in the dashboard. The safety backup appears in the list as
 "safety backup before restore" if you need to undo.
 
+A restore only ever writes to the database or volume the backup was taken from (it is
+linked by id, not by name), and only one restore per database/volume runs at a time. If a
+database with the same name was deleted and re-created, old backups are not restored
+into it automatically. A volume restore is not transactional: if it is interrupted, the
+volume may be partially restored — restore the safety backup or the same backup again.
+
 ## Downloading
 
 *Download* (password confirmation required) streams the file. Database dumps can be
@@ -90,10 +107,15 @@ Or with rsync to another machine:
 30 4 * * *  rsync -az --delete /var/lib/privatecloud/backups/ backup@other-host:/backups/privatecloud/
 ```
 
+The platform backups in `backups/platform/` include copies of `.env` (all secrets). Sync
+them only to storage you control and encrypt them (e.g. an `rclone crypt` remote).
+
 Built-in off-server storage is planned: backups are written through a `BackupStorage`
-interface (`backend/app/Services/Backups/BackupStorage.php`) so an S3-compatible
-implementation can be added and selected with `PC_BACKUP_STORAGE` without changing the
-backup logic.
+interface (`backend/app/Services/Backups/BackupStorage.php`: `stagingPath`, `store`,
+`localPath`, `exists`, `delete`, `isOffServer`) so an S3-compatible implementation can
+be added and selected with `PC_BACKUP_STORAGE` without changing the backup, verification
+or restore logic. The dashboard already shows whether the configured storage is
+off-server.
 
 ## Disaster recovery (new server)
 

@@ -16,6 +16,22 @@ sudo systemctl restart privatecloud                # restart the whole stack
 docker compose exec app php artisan privatecloud:reconcile   # re-check state now
 ```
 
+## Check the whole installation
+
+```bash
+sudo ./scripts/validate-install.sh        # PASS/WARN/FAIL for configuration, ports, firewall, services, HTTPS
+docker compose exec app php artisan privatecloud:health
+```
+
+## The control plane does not start: "PrivateCloud will not start with this configuration"
+
+`docker logs privatecloud-app` lists what `privatecloud:check-config` refused (for
+example `APP_DEBUG=true`, `PC_AUTO_HTTPS=off`, a weak `DB_PASSWORD`, or a development
+placeholder account such as `admin@example.com`). Fix `.env` and run
+`docker compose up -d`. A placeholder account is removed with
+`docker compose run --rm app php artisan privatecloud:admin --delete --email=admin@example.com`
+(create the real administrator first).
+
 ## Cannot sign in
 
 - **Forgot the password:**
@@ -72,8 +88,15 @@ docker compose logs --tail=100 worker
 docker compose restart worker
 ```
 
-Deployments that do not finish within an hour (`PC_DEPLOY_STALE_AFTER`) are marked failed
-automatically; queued deployments older than 12 hours are failed too.
+When the worker restarts (update, reboot, crash), deployments that were running are
+marked *failed — interrupted* as soon as it is back and the project is unlocked; deploy
+again. Deployments that do not finish within an hour (`PC_DEPLOY_STALE_AFTER`) are marked
+failed automatically; queued deployments older than 12 hours are failed too.
+
+## "GitHub rejected the saved token" in Settings
+
+The personal access token expired or was revoked. Create a new one
+([github.md](github.md#connect-github)) and connect it in *Settings → GitHub*.
 
 ## Server is slow / out of memory
 
@@ -105,4 +128,5 @@ encrypted secrets would become unreadable.
 | Generated Caddy site per project | `PC_DATA_DIR/caddy/sites/<project>.caddy` (do not edit) |
 | Access logs | `PC_DATA_DIR/caddy/logs/` |
 | Platform and application databases, Redis, certificates | Docker volumes `privatecloud_*` |
-| Application volumes | Docker volumes `pc-vol-<project>-<name>` |
+| Application volumes | Docker volumes `pc-vol-<project id>-<project>_<name>` (volumes created before this naming keep their original `pc-vol-<project>-<name>` name) |
+| Platform backups and `.env` copies | `PC_DATA_DIR/backups/platform/` (root only) |

@@ -78,13 +78,26 @@ exposed (ports 80/443). Details: [docs/architecture.md](docs/architecture.md).
    ./scripts/install.sh --domain cloud.example.com --email you@example.com
    ```
 
-   The installer installs Docker, configures the firewall (SSH, HTTP, HTTPS only), adds
-   swap on small servers, generates `.env` with random secrets (an existing `.env` is never
-   overwritten), builds and starts the stack, installs a systemd unit, and asks for the
-   administrator password. It is safe to run again.
+   The installer:
+   - refuses anything but Ubuntu 24.04 (x86_64/arm64, systemd), Docker older than 25,
+     less than 5 GB free disk, ports 80/443 already in use, placeholder domains/emails;
+   - installs Docker CE (log rotation, live-restore), enables `ufw` (deny incoming; SSH on
+     every port sshd uses, 80, 443), adds 2 GB swap on servers with < 4 GB RAM;
+   - generates `.env` with random secrets (root, mode 600; never printed). An existing
+     `.env` is **never overwritten** — it is validated, and a development `.env` is
+     refused;
+   - builds and starts the stack (API, two queue workers, scheduler, Caddy, two
+     PostgreSQL servers, Redis), installs a systemd unit and a nightly platform backup;
+   - asks for the administrator password (or `--admin-password-file FILE` for unattended
+     installs) and passes it on stdin;
+   - finishes with `scripts/validate-install.sh`.
 
-3. **Back up `/opt/privatecloud/.env` somewhere safe.** It contains `APP_KEY`, which
-   decrypts all stored secrets.
+   It is safe to run again. `./scripts/install.sh --help` lists the options.
+
+3. **Back up `/opt/privatecloud/.env` somewhere safe, off the server** (password manager
+   or encrypted storage). It contains `APP_KEY`, which decrypts all stored secrets.
+4. **Validate** at any time: `sudo ./scripts/validate-install.sh` (configuration, exposed
+   ports, firewall, services, HTTPS certificate, backups).
 
 ## First login
 
@@ -155,10 +168,15 @@ secrets are masked automatically. After changes, click **Redeploy** to apply the
 
 ```bash
 cd /opt/privatecloud
-sudo ./scripts/update.sh     # platform backup → git pull → rebuild → restart (migrations run automatically)
+sudo ./scripts/update.sh
 ```
 
-Your applications keep running while the control plane restarts.
+The script refuses to run with local code changes, waits until no deployment, backup or
+restore is running, takes a verified platform backup, builds the new version while the
+old one keeps running, restarts the control plane (migrations run on start) and waits for
+it to be healthy. If the build fails, nothing is restarted; if the new version is not
+healthy, it stops with exact rollback instructions. Your applications keep running
+throughout.
 
 ## Configuration
 
@@ -175,6 +193,13 @@ Settings live in `.env` (see [.env.example](.env.example)); defaults and descrip
 | `PC_THRESHOLD_CPU` / `_MEMORY` / `_DISK` | `90` / `90` / `85` | Warning thresholds (%), also editable in Settings |
 | `PC_METRICS_RETENTION_DAYS` | `3` | Metric history kept |
 | `PC_PASSWORD_CONFIRM_MINUTES` | `15` | How long a password confirmation unlocks secrets |
+| `PC_REMEMBER_DAYS` | `14` | Maximum lifetime of "remember me" |
+| `PC_BACKUP_MIN_FREE_DISK_MB` | `1024` | Free disk that must remain after a backup |
+| `PC_HISTORY_RETENTION_DAYS` / `PC_AUDIT_RETENTION_DAYS` | `90` / `365` | History pruning |
+
+The control plane refuses to start with an unsafe production configuration (debug mode,
+plain HTTP, insecure cookies, weak passwords, root user, placeholder domain or account);
+the reason is in `docker logs privatecloud-app`.
 
 ## Troubleshooting
 
@@ -183,10 +208,15 @@ deployments by stage, crashed apps, stuck queues, memory and disk.
 
 ## Security recommendations
 
-Use SSH keys only, enable unattended upgrades, use a strong unique password, keep backups
-and `.env` off the server, use a fine-grained GitHub token, and update regularly. How
-PrivateCloud protects secrets, sessions, commands and SQL, and the limits of single-server
-isolation: [docs/security.md](docs/security.md).
+Use SSH keys only, keep unattended upgrades on, use a strong unique password, keep backups
+and `.env` off the server, use a fine-grained GitHub token, and update regularly.
+
+**The Docker socket is a privileged trust boundary**: the control plane needs it to run
+your applications, and access to it is equivalent to root on the server. It is never
+exposed to applications or the network, and the control plane runs unprivileged with all
+capabilities dropped — but whoever controls the administrator account or the control
+plane controls the server. Details, and how PrivateCloud protects secrets, sessions,
+commands and SQL: [docs/security.md](docs/security.md).
 
 ## Development
 
@@ -195,28 +225,42 @@ procedure: [docs/development.md](docs/development.md).
 
 ## Project status
 
-**V1.** What has been verified, and how:
+**V1 release candidate — not yet validated on a real server.** Treat the first
+installation as a test (see [docs/first-server-test.md](docs/first-server-test.md)) and
+do not move important applications to it until that test passes.
 
-- Backend: 124 automated tests (feature, unit, and integration against a real PostgreSQL
-  17 server, including a real `pg_dump`/`pg_restore` round trip), Larastan level 5 with
-  no errors, Pint.
-- Frontend: 22 component/page tests (Vitest + Testing Library), strict TypeScript.
-- End to end with real Docker (Docker Desktop on macOS, dev compose stack, plain HTTP):
-  deploy, update under load with zero failed requests, failed build and failed health
-  check keeping production running, rollback, logs, restart, table editing confirmed with
-  `psql`, database and volume backup/restore, signed webhooks including duplicate and
-  forged deliveries, concurrent deploy requests, image-source projects, project deletion,
-  and a browser-driven create → deploy flow.
+Verified automatically and locally:
 
-**Not yet verified** on a real Vultr server: the installer (`scripts/install.sh` is
-syntax-checked and ShellCheck-clean but has not been run end to end), Let's Encrypt
-certificate issuance, and the GitHub API/webhook integration against github.com (covered
-by tests with recorded responses). Treat the first production install as a trial.
+- Backend: 158 automated tests (feature, unit, and integration against a real
+  PostgreSQL 17 server, including a real `pg_dump`/`pg_restore` round trip and database
+  isolation), Larastan level 5 with no errors, Pint. Frontend: 23 component/page tests,
+  strict TypeScript. Scripts: ShellCheck; installer guard rails and the fresh-install
+  path exercised in an Ubuntu 24.04 container with system tools stubbed.
+- End to end with real Docker (Docker Desktop on macOS):
+  - development stack: deploy, update under load with zero failed requests, failed
+    build and failed health check keeping production running, rollback, logs, restart,
+    table editing confirmed with `psql`, database and volume backup/restore, signed
+    webhooks (valid, forged, duplicate), concurrent deploy requests, image-source
+    projects, project deletion, browser-driven create → deploy;
+  - **production mode** (production compose file, uid 33, all capabilities dropped,
+    HTTPS via Caddy's internal CA on localhost): configuration guard, placeholder admin
+    refused, Secure/HttpOnly/SameSite=Strict cookies, no CORS headers, `X-Forwarded-For`
+    spoofing does not bypass login rate limits, unknown hosts get 404, git deployment,
+    worker killed mid-deployment then recovered and unlocked, backups, full control-plane
+    re-create with project networks repaired.
 
-**Known limitations (V1)**: one administrator; one server; builds run one at a time;
-private repositories only from GitHub; public Docker images only; backups stored locally
-(off-site copies via rclone/rsync); volume backups are taken while the app runs; no MFA
-yet; applications share the host kernel (see [security](docs/security.md)).
+**Requires a real server** (not yet tested): `scripts/install.sh` end to end on Vultr,
+`ufw` + Docker interaction, Let's Encrypt issuance and renewal, public DNS checks, the
+GitHub API and webhooks against github.com (covered by tests with recorded responses),
+reboot recovery, `update.sh` against a real remote.
+
+**Known limitations (V1)**: one administrator; no MFA; one server and one installation
+per Docker host; builds run one at a time and BuildKit builds have no memory limit (swap
+and OOM priorities protect the databases); private repositories only from GitHub (personal
+access token; GitHub App planned); public Docker images only; backups stored locally
+(off-site copies via rclone/rsync; S3 storage planned); volume backups are taken while
+the app runs; applications share the host kernel; IPv6 clients share one rate-limit
+bucket (see [security](docs/security.md)).
 
 **Not in V1 by design**: Kubernetes, teams/RBAC, billing, other cloud providers, multiple
 git providers, CDN, autoscaling, serverless. The data model already references servers so

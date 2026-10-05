@@ -10,6 +10,13 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.dev.yml exec app php artisan privatecloud:admin
 ```
 
+The development `.env` (plain HTTP, debug mode, root user) would be refused by the
+production configuration check; `docker-compose.dev.yml` sets `PC_DEV_MODE=true` so the
+findings are printed as `[dev]` warnings instead. Never use the dev compose file or the
+dev `.env` on a server; the installer refuses such a `.env`. Development accounts such as
+`admin@example.com` only exist in your local Docker volumes and are refused in
+production.
+
 Open <http://localhost:8088>. Projects can use `*.localhost` domains, e.g.
 `shop.localhost` → `curl -H 'Host: shop.localhost' http://localhost:8088/`.
 In development mode HTTPS is off (`PC_AUTO_HTTPS=off`) and plain-`http://` git URLs and
@@ -78,6 +85,34 @@ first deploy, update with a request loop running (0 failed requests), failed hea
 editing confirmed with `psql`, database and volume backup + restore, signed webhook
 (valid, forged, duplicate), simultaneous deploy requests, image-source project, project
 deletion.
+
+## Production-mode test on your machine
+
+The production compose file can be exercised locally without Let's Encrypt by serving
+the dashboard on `https://localhost` with Caddy's internal CA. In a copy of the
+repository (container names are fixed, so stop the dev stack first with
+`docker compose -f docker-compose.yml -f docker-compose.dev.yml down`), create a
+production `.env` (as `scripts/install.sh` would; `PC_DASHBOARD_DOMAIN` must be a real
+looking name, `DOCKER_GID` the socket's group — `0` on Docker Desktop) and an override:
+
+```yaml
+# e2e.override.yml
+services:
+  caddy:
+    environment:
+      PC_DASHBOARD_ADDRESS: "localhost"
+    ports: !override
+      - "127.0.0.1:8443:443"
+      - "127.0.0.1:8081:80"
+```
+
+```bash
+docker compose -p pcprod -f docker-compose.yml -f e2e.override.yml up -d --build
+printf '%s' 'a-long-password-123' | docker exec -i privatecloud-app php artisan privatecloud:admin --email=you@your-domain.dev --password-stdin
+curl -k https://localhost:8443/up
+```
+
+Do not add project domains in this mode (they would request real certificates).
 
 ## Conventions
 

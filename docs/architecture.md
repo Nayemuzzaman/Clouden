@@ -105,8 +105,10 @@ queued → cloning → building → starting → health_checking → routing →
 6. **success** – Recorded in one transaction. After a short drain period (default 5 s) the
    previous container is stopped and removed; its image is kept for rollback.
 
-Any failure before step 6 removes the new container and leaves production exactly as it
-was. Details and guarantees: [deployment.md](deployment.md).
+Any failure before step 6 removes the new container (and the image it built) and leaves
+production exactly as it was. Rollback reuses the image of a successful deployment and
+checks that its tag still points at the image id recorded when it passed its health
+check. Details and guarantees: [deployment.md](deployment.md).
 
 ## Concurrency
 
@@ -117,9 +119,31 @@ was. Details and guarantees: [deployment.md](deployment.md).
   later jobs wait.
 - The `deployments` queue has one worker: builds are serialized across projects. On a
   small VPS this is deliberate — parallel builds compete for the same CPU and RAM.
-- Webhook deliveries are de-duplicated by GitHub's delivery id (unique index).
+- Webhook deliveries are de-duplicated by GitHub's delivery id and by a hash of the
+  signed body (both unique indexes), so redeliveries and replays deploy only once.
 - Deletion marks the project first (`deleting_at`); no new deployments can be created
   after that.
+- Only one restore per database or volume runs at a time.
+
+### Worker restarts and crashes
+
+Each queue has exactly one worker container, so anything still marked as running when a
+worker starts was interrupted (update, reboot, out-of-memory kill, `docker kill`). Before
+taking new jobs, the worker runs `privatecloud:recover-interrupted`:
+
+- deployments: routing is re-synced to the recorded production deployments, the half-
+  started candidate container and build directory are removed, the deployment is marked
+  failed ("interrupted … the previous version was not changed") and the project lock is
+  released, so the next deployment can start immediately;
+- backups: marked failed, partial files deleted;
+- restores and deletions: marked failed with the next step (restore again / delete again;
+  the safety backup taken before the restore is named).
+
+A graceful stop (`docker compose stop`, SIGTERM) lets the current job finish within the
+30 s stop grace period. `scripts/update.sh` waits until no deployment, backup or restore
+is running before restarting anything. Redis `retry_after` is longer than the longest job,
+so a running job is never handed out twice. Deployments that are still active after
+`PC_DEPLOY_STALE_AFTER` are failed by the reconciler as a last resort.
 
 ## Networking and isolation
 
@@ -130,6 +154,14 @@ was. Details and guarantees: [deployment.md](deployment.md).
   application containers are not attached to.
 - Only Caddy publishes ports (80, 443). Caddy's admin API listens on `localhost` inside
   its container; the control plane reloads Caddy with `docker exec caddy caddy reload`.
+- Docker object names: containers `pc-<slug>-<n>`, images `pc-<slug>:<n>`, networks
+  `pc-net-<slug>`, volumes `pc-vol-<project id>-<slug>_<volume>` (unambiguous: slugs and
+  volume names cannot contain `_`). Every object is labelled with the project id and a
+  random **installation id** (`privatecloud.instance`, stored in the platform database);
+  cleanup, deletion and volume mounting never touch objects of another installation.
+- Run **one PrivateCloud installation per Docker host**. The installation id protects
+  against leftovers of a previous installation, but image tags and network names are
+  derived from project slugs and are not namespaced per installation.
 
 **Remaining limitations of a single-server Docker setup** (accepted for V1):
 
@@ -140,7 +172,8 @@ was. Details and guarantees: [deployment.md](deployment.md).
   from `PUBLIC` on every database).
 - Applications can reach the internet and anything else the host can reach.
 - The control plane has access to the Docker socket, which is root-equivalent on the
-  host. It is never exposed to applications or the network.
+  host. It is never exposed to applications or the network. See
+  [security.md](security.md#the-docker-socket-is-a-privileged-trust-boundary).
 
 ## Real-time updates
 
@@ -156,7 +189,7 @@ simpler to operate and cheap at single-admin scale.
 | minute | worker heartbeat, metrics collection + threshold alerts, reconciler (stale jobs, crashed apps, network repair) |
 | 5 minutes | certificate/DNS checks for domains that are not yet active; due scheduled backups |
 | hour | prune old metrics |
-| day | re-check all certificates; prune failed queue jobs older than 30 days |
+| day | re-check all certificates; prune failed queue jobs older than 30 days; prune history (build logs of old deployments, read notifications, finished operations, SQL history: 90 days; audit log and webhook deliveries: 365 days) |
 | week (Sun 04:30) | cleanup: BuildKit cache older than 7 days, dangling images, stale build directories |
 
 ## Decisions
