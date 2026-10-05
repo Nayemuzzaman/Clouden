@@ -2,10 +2,12 @@
 
 namespace Tests\Unit;
 
+use App\Console\Commands\CreateAdmin;
 use App\Services\Audit\AuditLogger;
 use App\Services\Databases\ColumnType;
 use App\Services\Databases\DestructiveQueryDetector;
 use App\Services\Databases\Identifier;
+use App\Services\Deployment\ImageBuilder;
 use App\Services\Deployment\ImageReference;
 use App\Services\Domains\DomainValidator;
 use App\Services\Environment\DotenvParser;
@@ -138,5 +140,25 @@ class SecurityHelpersTest extends TestCase
     {
         $scrubbed = (new AuditLogger)->scrub(['key' => 'APP_KEY', 'value' => 'secret', 'nested' => ['password' => 'x', 'name' => 'ok'], 'token' => 't']);
         $this->assertSame(['key' => 'APP_KEY', 'value' => '[redacted]', 'nested' => ['password' => '[redacted]', 'name' => 'ok'], 'token' => '[redacted]'], $scrubbed);
+    }
+
+    public function test_build_argument_names_that_affect_the_build_tooling_are_refused(): void
+    {
+        foreach (['LD_PRELOAD', 'ld_library_path', 'DOCKER_HOST', 'DOCKER_CONFIG', 'BUILDKIT_HOST', 'BUILDX_BUILDER', 'HTTPS_PROXY', 'no_proxy', 'SSL_CERT_FILE', 'GIT_SSH_COMMAND', 'GODEBUG', 'PATH', 'HOME', 'BASH_ENV', '1BAD', 'A-B'] as $bad) {
+            $this->assertFalse(ImageBuilder::isAllowedBuildArg($bad), $bad);
+        }
+        foreach (['NODE_ENV', 'NEXT_PUBLIC_API_URL', 'VITE_APP_TITLE', 'NPM_TOKEN', 'APP_VERSION', '_X'] as $ok) {
+            $this->assertTrue(ImageBuilder::isAllowedBuildArg($ok), $ok);
+        }
+    }
+
+    public function test_placeholder_emails_are_recognised(): void
+    {
+        foreach (['admin@example.com', 'ADMIN@EXAMPLE.ORG', 'me@localhost', 'a@b.test', 'root@server.local', 'x@dev.localhost'] as $placeholder) {
+            $this->assertTrue(CreateAdmin::isPlaceholderEmail($placeholder), $placeholder);
+        }
+        foreach (['ops@acme-corp.io', 'nayem@gmail.com', 'me@example.company.com'] as $real) {
+            $this->assertFalse(CreateAdmin::isPlaceholderEmail($real), $real);
+        }
     }
 }

@@ -47,7 +47,7 @@ class DatabaseIntegrationTest extends TestCase
         // Real pg_dump / pg_restore for the backup round trip.
         $this->app->instance(CommandRunner::class, new SymfonyCommandRunner);
 
-        foreach (['it_shop', 'it_blog'] as $name) {
+        foreach (['it_shop', 'it_blog', 'it_leftover'] as $name) {
             app(PostgresProvisioner::class)->drop($name, $name);
         }
     }
@@ -86,6 +86,24 @@ class DatabaseIntegrationTest extends TestCase
         }
         $this->assertNotSame($shop->password, $blog->password);
         $this->assertGreaterThanOrEqual(32, strlen($shop->password));
+    }
+
+    public function test_new_database_never_takes_over_an_existing_role_or_database(): void
+    {
+        // e.g. kept on the server after its project was deleted
+        $admin = $this->connect('postgres', 'postgres', (string) getenv('PC_TEST_APPS_DB_PASSWORD'));
+        $admin->exec("CREATE ROLE it_leftover WITH LOGIN PASSWORD 'original-password-1'");
+        $admin->exec('CREATE DATABASE it_leftover OWNER it_leftover');
+
+        try {
+            app(DatabaseService::class)->create('it_leftover');
+            $this->fail('An existing role must not be adopted.');
+        } catch (\DomainException $e) {
+            $this->assertStringContainsString('already exists on the PostgreSQL server', $e->getMessage());
+        }
+
+        $this->assertSame(0, ProjectDatabase::query()->count(), 'no record left that "retry" could use to adopt it');
+        $this->assertSame('it_leftover', $this->connect('it_leftover', 'it_leftover', 'original-password-1')->query('SELECT current_user')->fetchColumn(), 'password unchanged');
     }
 
     public function test_reprovision_recreates_missing_databases_idempotently(): void

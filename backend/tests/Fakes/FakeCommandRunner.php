@@ -29,6 +29,14 @@ class FakeCommandRunner implements CommandRunner
         return $this;
     }
 
+    /** Like on(), but takes precedence over handlers registered earlier. */
+    public function prepend(Closure $matcher, Closure $handler): self
+    {
+        array_unshift($this->handlers, [$matcher, $handler]);
+
+        return $this;
+    }
+
     public function onBinary(string $binary, Closure $handler): self
     {
         return $this->on(fn (array $cmd) => basename($cmd[0]) === $binary, $handler);

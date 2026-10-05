@@ -52,7 +52,10 @@ class BackupTest extends TestCase
             : new CommandResult(0, ";\n; Archive created at 2026-10-05\n", ''));
 
         // Real PostgreSQL behaviour is covered by DatabaseIntegrationTest.
-        $this->mock(PostgresProvisioner::class, fn ($mock) => $mock->shouldReceive('terminateConnections'));
+        $this->mock(PostgresProvisioner::class, function ($mock) {
+            $mock->shouldReceive('terminateConnections');
+            $mock->shouldReceive('size')->andReturn(4096);
+        });
 
         Backup::updated(function (Backup $b) {
             if ($b->wasChanged('status')) {

@@ -7,6 +7,7 @@ import NewProject, { parseEnv } from '../pages/NewProject'
 import Environment from '../pages/project/Environment'
 import Domains from '../pages/project/Domains'
 import DeploymentDetail from '../pages/project/DeploymentDetail'
+import SettingsPage from '../pages/SettingsPage'
 import { AuthProvider } from '../hooks/auth'
 import { baseProject, mockApi, renderWithProviders } from './utils'
 import type { Deployment, Project } from '../lib/types'
@@ -178,5 +179,22 @@ describe('Deployment detail', () => {
     expect(screen.getByText(/Deployment #3 is still serving traffic/)).toBeInTheDocument()
     expect(await screen.findByText('#7 [4/5] RUN npm run build')).toBeInTheDocument()
     expect(screen.queryByText('Successful')).not.toBeInTheDocument()
+  })
+})
+
+describe('Settings', () => {
+  it('warns when GitHub rejected the saved token and offers to connect a new one', async () => {
+    mockApi({
+      'GET /api/v1/settings': {
+        name: 'PrivateCloud', dashboard_domain: 'cloud.example.com', webhook_base_url: 'https://cloud.example.com', public_ipv4: '203.0.113.10', https: true,
+        thresholds: { cpu: 90, memory: 90, disk: 85 }, metrics_retention_days: 3, backup_storage: { driver: 'local', off_server: false },
+        github: { connected: true, login: 'acme', name: 'Acme', avatar_url: null, scopes: null, last_verified_at: '2026-10-01T00:00:00Z', token_rejected_at: '2026-10-04T08:00:00Z' },
+      },
+      'GET /api/v1/audit-logs': { data: [], meta: { current_page: 1, last_page: 1, total: 0, per_page: 25 } },
+    })
+    renderWithProviders(<SettingsPage />)
+    expect(await screen.findByText('GitHub rejected the saved token')).toBeInTheDocument()
+    expect(screen.getByLabelText('GitHub token')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument()
   })
 })

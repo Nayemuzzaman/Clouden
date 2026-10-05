@@ -215,6 +215,78 @@ class DeploymentPipelineTest extends TestCase
         $this->assertTrue($failed->logs()->where('stream', 'container')->exists(), 'container output captured for debugging');
     }
 
+    public function test_failed_deployment_removes_its_own_image_but_never_production_images(): void
+    {
+        $this->actingAsAdmin();
+        $this->deploy();
+        $this->healthStatus = 500;
+
+        $failed = $this->deploy()->fresh();
+
+        $this->assertArrayNotHasKey('pc-shop:2', $this->docker->images, 'image of the failed deployment removed');
+        $this->assertFalse($failed->image_available);
+        $this->assertArrayHasKey('pc-shop:1', $this->docker->images, 'production image kept');
+    }
+
+    public function test_failure_reason_never_stores_secret_values(): void
+    {
+        $this->actingAsAdmin();
+        $this->runner->prepend(fn (array $cmd) => basename($cmd[0]) === 'docker' && in_array('build', $cmd, true), function (array $cmd, ?callable $onLine) {
+            foreach (['#7 [4/5] RUN ./check', '#7 1.2 Error: token super-secret-token-123 was rejected', '#7 ERROR: process "/bin/sh -c ./check" did not complete successfully: exit code: 1'] as $line) {
+                $onLine('err', $line);
+            }
+
+            return new CommandResult(1, '', '');
+        });
+
+        $failed = $this->deploy()->fresh();
+
+        $this->assertSame(DeploymentStatus::Failed, $failed->status);
+        $this->assertStringNotContainsString('super-secret-token-123', (string) $failed->failure_reason);
+        $this->assertStringContainsString('[secret]', (string) $failed->failure_reason);
+        $this->assertStringNotContainsString('super-secret-token-123', (string) $failed->failure_detail);
+    }
+
+    public function test_reserved_build_argument_fails_the_build_cleanly(): void
+    {
+        $this->actingAsAdmin();
+        $this->project->environmentVariables()->create(['key' => 'LD_PRELOAD', 'value' => '/tmp/x.so', 'available_at_build' => true]);
+
+        $failed = $this->deploy()->fresh();
+
+        $this->assertSame('building', $failed->failure_stage);
+        $this->assertStringContainsString('LD_PRELOAD', (string) $failed->failure_reason);
+        $this->assertSame([], array_filter($this->runner->commandsFor('docker'), fn ($c) => in_array('build', $c, true)), 'docker build never ran');
+    }
+
+    public function test_volume_owned_by_another_project_is_never_mounted(): void
+    {
+        $this->actingAsAdmin();
+        $this->project->volumes()->create(['name' => 'data', 'mount_path' => '/data', 'docker_name' => 'pc-vol-shared']);
+        $this->docker->volumes['pc-vol-shared'] = ['privatecloud.managed' => 'true', 'privatecloud.project' => '999'];
+
+        $failed = $this->deploy()->fresh();
+
+        $this->assertSame('starting', $failed->failure_stage);
+        $this->assertStringContainsString('belongs to another project', (string) $failed->failure_reason);
+        $this->assertSame([], array_filter($this->docker->calls, fn ($c) => str_starts_with($c, 'create:')), 'no container was created');
+    }
+
+    public function test_rollback_refuses_an_image_tag_that_now_points_to_a_different_image(): void
+    {
+        $this->actingAsAdmin();
+        $first = $this->deploy()->fresh();
+        $this->deploy();
+        $this->docker->images['pc-shop:1'] = ['Id' => 'sha256:'.str_repeat('f', 64)];
+
+        $response = $this->postJson("/api/v1/projects/shop/deployments/{$first->id}/rollback")->assertStatus(202);
+        $rollback = Deployment::query()->findOrFail($response->json('data.id'));
+
+        $this->assertSame(DeploymentStatus::Failed, $rollback->status);
+        $this->assertStringContainsString('no longer the image deployed by #1', (string) $rollback->failure_reason);
+        $this->assertSame(2, $this->project->fresh()->currentDeployment->number, 'production unchanged');
+    }
+
     public function test_application_crash_during_startup_is_reported(): void
     {
         $this->actingAsAdmin();

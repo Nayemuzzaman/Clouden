@@ -202,9 +202,13 @@ class FakeDocker extends DockerClient
         $this->images[$image.':'.$tag] = ['Id' => 'sha256:'.str_repeat('b', 64)];
     }
 
-    public function ensureVolume(string $name, array $labels = []): void
+    public function ensureVolume(string $name, array $labels = []): array
     {
-        $this->volumes[$name] = true;
+        if (! isset($this->volumes[$name])) {
+            $this->volumes[$name] = $labels;
+        }
+
+        return ['Name' => $name, 'Labels' => is_array($this->volumes[$name]) ? $this->volumes[$name] : []];
     }
 
     public function removeVolume(string $name): void
