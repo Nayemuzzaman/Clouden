@@ -16,11 +16,9 @@ affects security (exposed port, secret visible, wrong certificate).
   `Dockerfile`, `server.js`, `package.json`) at the repository root, branch `main`.
 - A **fine-grained** GitHub token, expiring in 7 days, with access to that one repository
   only: *Metadata: Read*, *Contents: Read*, *Webhooks: Read and write*.
-- The branch to test, packed as a bundle (nothing needs to be pushed):
-
-  ```bash
-  git -C /path/to/Clouden bundle create /tmp/privatecloud.bundle feature/implementation
-  ```
+- The branch to test: `feature/implementation` of
+  `https://github.com/Nayemuzzaman/Clouden` (or, for an unpushed branch, a bundle:
+  `git -C /path/to/Clouden bundle create /tmp/privatecloud.bundle feature/implementation`).
 
 ## 1. Create the server
 
@@ -44,10 +42,10 @@ dig +short AAAA pc-test.example.net @1.1.1.1
 ## 3. Prepare the server
 
 ```bash
-scp /tmp/privatecloud.bundle root@<ip>:/root/
 ssh root@<ip>
 apt-get update && apt-get -y upgrade && reboot      # then ssh in again
-git clone -b feature/implementation /root/privatecloud.bundle /opt/privatecloud
+git clone -b feature/implementation https://github.com/Nayemuzzaman/Clouden.git /opt/privatecloud
+# or, from a bundle copied with scp: git clone -b feature/implementation /root/privatecloud.bundle /opt/privatecloud
 cd /opt/privatecloud && git log -1 --oneline        # the commit you expect
 ```
 
@@ -184,14 +182,8 @@ get one notification; the live app keeps running. Create a new token and connect
 
 ## 15. Update procedure
 
-On your workstation, make a trivial commit on the branch, then create a new bundle and copy it:
-
-```bash
-git -C /path/to/Clouden bundle create /tmp/privatecloud.bundle feature/implementation
-scp /tmp/privatecloud.bundle root@<ip>:/root/privatecloud.bundle
-```
-
-On the server: `cd /opt/privatecloud && sudo ./scripts/update.sh` → waits for running
+On your workstation, push a trivial commit to the branch (or, when testing from a
+bundle, create a new bundle and copy it over the old one with `scp`). On the server: `cd /opt/privatecloud && sudo ./scripts/update.sh` → waits for running
 work, backs up, builds, restarts, ends healthy; the app answered throughout.
 
 ## 16. Deletion and teardown

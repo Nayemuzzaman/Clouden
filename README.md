@@ -11,6 +11,21 @@ backups and watch server health — from a web dashboard, without SSH.
 Write code → git push → Deploy Latest → live (after a successful build and health check)
 ```
 
+> **Status: V1 release candidate.** Fully tested automatically and with real Docker, but
+> not yet validated on a real VPS. Run the [first server test](docs/first-server-test.md)
+> before trusting it with important applications. See [Project status](#project-status).
+
+**Contents:** [Features](#features) · [How it works](#how-it-works) ·
+[Tech stack](#tech-stack) · [Requirements](#requirements) ·
+[Installation](#installation) · [First login](#first-login) ·
+[Create a project](#create-a-project) · [Connect GitHub](#connect-github) ·
+[Domains](#domains) · [Databases](#databases) · [Backups](#backups-and-restore) ·
+[Updating](#updating-privatecloud) · [Configuration](#configuration) ·
+[Command-line reference](#command-line-reference) · [API](#api) ·
+[Repository layout](#repository-layout) · [Documentation](#documentation) ·
+[Security](#security-recommendations) · [Development](#development) ·
+[Project status](#project-status)
+
 ## Features
 
 - **Projects** from a GitHub repository (public or private), any public git URL, or a
@@ -57,6 +72,39 @@ with the React dashboard, queue workers, scheduler), PostgreSQL for PrivateCloud
 data, a separate PostgreSQL server for your applications, Redis and Caddy. Only Caddy is
 exposed (ports 80/443). Details: [docs/architecture.md](docs/architecture.md).
 
+| Container | Role |
+| --- | --- |
+| `privatecloud-caddy` | Edge web server: TLS (Let's Encrypt), dashboard and project routing. The only container with published ports (80/443). |
+| `privatecloud-app` | Laravel API + built React dashboard (FrankenPHP). Runs migrations on start. |
+| `privatecloud-worker` | `deployments` queue: clone, build, start, health-check, route. One build at a time. |
+| `privatecloud-tasks` | `default` queue: backups, restores, project deletion, domain checks. |
+| `privatecloud-scheduler` | Periodic jobs: metrics, reconciliation, scheduled backups, certificate checks, pruning. |
+| `privatecloud-platform-db` | PostgreSQL 17 for PrivateCloud's own data (projects, deployments, encrypted secrets, audit log). |
+| `privatecloud-apps-db` | Separate PostgreSQL 17 for application databases (one role + database per app). |
+| `privatecloud-redis` | Queues, cache, locks. |
+| `pc-<project>-<n>` | Your application containers, one network per project. |
+
+The deployment pipeline:
+
+```
+queued → cloning → building → starting → health_checking → routing → success
+                                                                    ↘ failed / cancelled
+```
+
+The new container starts **next to** the live one; traffic switches only after it passed
+its health check, and any failure leaves the live version untouched.
+
+## Tech stack
+
+| Layer | Technology |
+| --- | --- |
+| Backend | Laravel 13, PHP 8.4, FrankenPHP, Laravel queues on Redis, scheduler |
+| Frontend | React 19, TypeScript (strict), Vite, Tailwind CSS 4, TanStack Query, React Router, Radix UI, CodeMirror (SQL), Recharts, cmdk, lucide icons |
+| Data | PostgreSQL 17 (platform + applications), Redis 7 |
+| Runtime | Docker Engine (HTTP API over the unix socket), BuildKit for builds, Caddy 2 with automatic HTTPS |
+| Host | Ubuntu 24.04 LTS, `ufw`, systemd |
+| Quality | PHPUnit (unit, feature, PostgreSQL integration), Larastan level 5, Pint, Vitest + Testing Library, oxlint, ShellCheck |
+
 ## Requirements
 
 - A fresh **Ubuntu 24.04 LTS** server (tested target: Vultr Cloud Compute). 1 vCPU / 2 GB
@@ -73,7 +121,7 @@ exposed (ports 80/443). Details: [docs/architecture.md](docs/architecture.md).
 
    ```bash
    ssh root@<server-ip>
-   git clone https://github.com/<you>/privatecloud.git /opt/privatecloud
+   git clone https://github.com/Nayemuzzaman/Clouden.git /opt/privatecloud
    cd /opt/privatecloud
    ./scripts/install.sh --domain cloud.example.com --email you@example.com
    ```
@@ -201,6 +249,93 @@ The control plane refuses to start with an unsafe production configuration (debu
 plain HTTP, insecure cookies, weak passwords, root user, placeholder domain or account);
 the reason is in `docker logs privatecloud-app`.
 
+## Command-line reference
+
+Run from the installation directory (`/opt/privatecloud`).
+
+**Scripts** (as root):
+
+| Command | What it does |
+| --- | --- |
+| `scripts/install.sh --domain D --email E` | Install or re-validate the server (see `--help`). |
+| `scripts/validate-install.sh` | Read-only PASS/WARN/FAIL check of configuration, exposed ports, firewall, services, HTTPS, backups. |
+| `scripts/update.sh` | Safe update: wait for running work → platform backup → build → restart → health check. |
+| `scripts/backup-platform.sh` | Verified dump of the platform database + copy of `.env` (nightly via cron). |
+| `scripts/dev-setup.sh` | Local development `.env` (never for servers). |
+
+**Artisan commands** (`docker compose exec app php artisan …`):
+
+| Command | What it does |
+| --- | --- |
+| `privatecloud:admin --email=E [--reset \| --delete \| --check-exists]` | Create the administrator, reset the password (signs out every session), delete an account. Password from a prompt or `--password-stdin`. |
+| `privatecloud:check-config` | Production configuration guard (runs automatically on start). |
+| `privatecloud:health [--plain\|--json]` | Docker, both PostgreSQL servers, Caddy, Redis and worker health; non-zero exit if a service is down. |
+| `privatecloud:idle` | Exit 0 when no deployment, backup or restore is running. |
+| `privatecloud:reconcile` | Fail stale jobs, detect crashed apps, repair project networks (every minute). |
+| `privatecloud:recover-interrupted deployments\|default` | Clean up work interrupted by a worker restart (runs on worker start). |
+| `privatecloud:check-domains [--all]` | Re-check DNS and certificates. |
+| `privatecloud:scheduled-backups` | Start due scheduled backups and apply retention. |
+| `privatecloud:metrics [--prune]` | Record or prune metrics. |
+| `privatecloud:prune-history` | Delete old build logs, notifications, operations, SQL history. |
+| `privatecloud:cleanup` | Remove old build cache, dangling images, stale build directories. |
+| `privatecloud:reprovision-databases` | Re-create application roles/databases from the platform records (disaster recovery). |
+
+## API
+
+The dashboard is a client of a versioned REST API under `/api/v1` (about 100 endpoints),
+so everything you can do in the dashboard can be scripted with the same session:
+
+| Area | Endpoints (examples) |
+| --- | --- |
+| Auth | `GET auth/csrf`, `POST auth/login`, `POST auth/logout`, `GET auth/me`, `POST auth/confirm-password`, `PUT auth/password` |
+| Projects | `GET/POST projects`, `GET/PATCH/DELETE projects/{slug}`, `POST projects/{slug}/start\|stop\|restart`, `PUT projects/{slug}/auto-deploy` |
+| Deployments | `GET/POST projects/{slug}/deployments`, `POST projects/{slug}/redeploy`, `GET …/deployments/{id}/logs`, `POST …/deployments/{id}/rollback\|cancel` |
+| Environment | `GET/POST projects/{slug}/environment`, `POST …/environment/import`, `PUT/DELETE …/environment/{id}`, `POST …/environment/{id}/reveal` |
+| Domains | `GET/POST projects/{slug}/domains`, `POST …/domains/{id}/check\|primary`, `DELETE …/domains/{id}` |
+| Databases | `GET/POST databases`, `GET databases/{id}/tables`, `…/tables/{t}/rows` (CRUD), `POST databases/{id}/sql` |
+| Backups | `GET/POST backups`, `POST backups/{id}/restore`, `GET backups/{id}/download` |
+| Server | `GET containers`, `GET server/metrics`, `GET server/services`, `POST server/cleanup` |
+| Settings | `GET settings`, `PUT settings/thresholds`, `POST/DELETE settings/github`, `GET github/repositories` |
+| Webhooks | `POST webhooks/github/{project-uuid}` (HMAC-signed, no session) |
+
+All management endpoints require the administrator session and the `X-XSRF-TOKEN`
+header; secret reveals, restores and downloads also require a recent password
+confirmation (HTTP 423 otherwise). The full list is in
+[backend/routes/api.php](backend/routes/api.php).
+
+## Repository layout
+
+```
+backend/                 Laravel API (app/Services holds the engine)
+  app/Services/          Deployment pipeline, Docker client, Caddy routing, databases,
+                         backups, domains, GitHub, monitoring, environment, audit
+  app/Console/Commands/  privatecloud:* commands
+  tests/                 Unit, Feature and Integration (real PostgreSQL) tests
+frontend/                React dashboard (src/pages, src/components, src/hooks)
+docker/app/              Control-plane image (Dockerfile, entrypoint, FrankenPHP config)
+infrastructure/          Edge Caddyfile, systemd unit
+scripts/                 install, validate-install, update, backup-platform, dev-setup
+examples/simple-node-app Example application with a Dockerfile and /health endpoint
+docs/                    Architecture, deployment, security, backups, GitHub,
+                         troubleshooting, development, first server test
+docker-compose.yml       Production stack · docker-compose.dev.yml: local development
+```
+
+## Documentation
+
+| Guide | Contents |
+| --- | --- |
+| [Architecture](docs/architecture.md) | Components, data model, pipeline, concurrency, worker recovery, networking and isolation, decisions |
+| [Deploying applications](docs/deployment.md) | The Dockerfile contract, stages, rollback, build-time variables, limits, starter Dockerfiles |
+| [Security](docs/security.md) | Exposure, Docker socket trust boundary, sessions, secrets, injection safety, webhooks |
+| [Backups](docs/backups.md) | What is backed up, verification, restore, off-site copies, disaster recovery |
+| [GitHub](docs/github.md) | Token permissions, auto deploy, webhooks, token expiry |
+| [Troubleshooting](docs/troubleshooting.md) | Sign-in, DNS/HTTPS, failed deployments by stage, queues, disk, memory |
+| [Development](docs/development.md) | Local stack, tests, end-to-end and production-mode testing |
+| [First server test](docs/first-server-test.md) | Ordered validation procedure for a fresh Vultr server |
+
+The same guides are published in the [project wiki](https://github.com/Nayemuzzaman/Clouden/wiki).
+
 ## Troubleshooting
 
 See [docs/troubleshooting.md](docs/troubleshooting.md) — sign-in, DNS/HTTPS, failed
@@ -220,8 +355,19 @@ commands and SQL: [docs/security.md](docs/security.md).
 
 ## Development
 
-Run the full stack locally with Docker Compose, run the test suites, and the end-to-end
-procedure: [docs/development.md](docs/development.md).
+```bash
+./scripts/dev-setup.sh                                                  # local .env (HTTP, dev mode)
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec app php artisan privatecloud:admin
+open http://localhost:8088
+
+cd backend && php artisan test && ./vendor/bin/phpstan analyse && ./vendor/bin/pint --test
+cd frontend && npm test && npm run typecheck && npm run lint && npm run build
+```
+
+Integration tests against a real PostgreSQL server, the end-to-end procedure and a
+production-mode test on your workstation: [docs/development.md](docs/development.md).
+Commits follow `type: summary` (`feat`, `fix`, `test`, `docs`, `refactor`, `chore`).
 
 ## Project status
 
@@ -265,3 +411,8 @@ bucket (see [security](docs/security.md)).
 **Not in V1 by design**: Kubernetes, teams/RBAC, billing, other cloud providers, multiple
 git providers, CDN, autoscaling, serverless. The data model already references servers so
 multi-node management can be added later ([architecture](docs/architecture.md#path-to-multiple-servers)).
+
+## License
+
+No license has been chosen yet; until a `LICENSE` file is added, all rights are reserved
+by the author.
