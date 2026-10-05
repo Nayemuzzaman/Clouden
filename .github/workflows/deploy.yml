@@ -1,0 +1,95 @@
+name: Deploy
+
+# Updates an existing PrivateCloud server to the latest code of the branch it
+# tracks (main) by running scripts/update.sh over SSH. That script waits for
+# running deployments/backups, takes a verified platform backup, builds before
+# restarting, and fails (without touching the applications) if the new version
+# is not healthy. Setup: docs/ci-cd.md.
+#
+# - Manual: Actions → Deploy → Run workflow → type "deploy".
+# - Automatic: after CI succeeds on main, only when the repository variable
+#   AUTO_DEPLOY is "true".
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to update the PrivateCloud server'
+        required: true
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.confirm == 'deploy') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       vars.AUTO_DEPLOY == 'true')
+    name: Update the PrivateCloud server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment:
+      name: production
+      url: ${{ vars.DASHBOARD_URL }}
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/privatecloud' }}
+      DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+    steps:
+      - name: Check configuration
+        env:
+          HAS_KEY: ${{ secrets.DEPLOY_SSH_KEY != '' }}
+          HAS_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS != '' }}
+        run: |
+          missing=()
+          [[ -n "$DEPLOY_HOST" ]] || missing+=("secret DEPLOY_HOST")
+          [[ -n "$DEPLOY_USER" ]] || missing+=("secret DEPLOY_USER")
+          [[ "$HAS_KEY" == true ]] || missing+=("secret DEPLOY_SSH_KEY")
+          [[ "$HAS_KNOWN_HOSTS" == true ]] || missing+=("secret DEPLOY_KNOWN_HOSTS")
+          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || missing+=("valid variable DEPLOY_PATH")
+          if (( ${#missing[@]} )); then
+            echo "::error::Deployment is not configured: ${missing[*]}. See docs/ci-cd.md."
+            exit 1
+          fi
+
+      - name: Configure SSH (pinned host key, no prompts)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Run scripts/update.sh on the server
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n $DEPLOY_PATH/scripts/update.sh"
+
+      - name: Verify the dashboard answers
+        if: env.DASHBOARD_URL != ''
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 10 -o /dev/null "$DASHBOARD_URL/up"; then echo "Dashboard is up"; exit 0; fi
+            sleep 5
+          done
+          echo "::error::$DASHBOARD_URL/up did not answer after the update"
+          exit 1
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
