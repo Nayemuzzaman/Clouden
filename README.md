@@ -1,5 +1,7 @@
 # PrivateCloud
 
+[![CI](https://github.com/Nayemuzzaman/Clouden/actions/workflows/ci.yml/badge.svg)](https://github.com/Nayemuzzaman/Clouden/actions/workflows/ci.yml)
+
 **Your own Railway/Vercel-style platform on a single VPS.** Install it once on a fresh
 Ubuntu server, then deploy applications from GitHub, give them domains with automatic
 HTTPS, create PostgreSQL databases, manage environment variables, read logs, take
@@ -23,7 +25,7 @@ Write code → git push → Deploy Latest → live (after a successful build and
 [Updating](#updating-privatecloud) · [Configuration](#configuration) ·
 [Command-line reference](#command-line-reference) · [API](#api) ·
 [Repository layout](#repository-layout) · [Documentation](#documentation) ·
-[Security](#security-recommendations) · [Development](#development) ·
+[Security](#security-recommendations) · [Development](#development) · [CI/CD](#cicd) ·
 [Project status](#project-status)
 
 ## Features
@@ -317,7 +319,9 @@ infrastructure/          Edge Caddyfile, systemd unit
 scripts/                 install, validate-install, update, backup-platform, dev-setup
 examples/simple-node-app Example application with a Dockerfile and /health endpoint
 docs/                    Architecture, deployment, security, backups, GitHub,
-                         troubleshooting, development, first server test
+                         troubleshooting, development, first server test, CI/CD
+.github/workflows/       CI (tests, analysis, smoke test) and Deploy (update.sh over SSH)
+.github/ci/              Smoke test and installer guard scripts used by CI
 docker-compose.yml       Production stack · docker-compose.dev.yml: local development
 ```
 
@@ -333,6 +337,7 @@ docker-compose.yml       Production stack · docker-compose.dev.yml: local devel
 | [Troubleshooting](docs/troubleshooting.md) | Sign-in, DNS/HTTPS, failed deployments by stage, queues, disk, memory |
 | [Development](docs/development.md) | Local stack, tests, end-to-end and production-mode testing |
 | [First server test](docs/first-server-test.md) | Ordered validation procedure for a fresh Vultr server |
+| [CI/CD](docs/ci-cd.md) | What CI checks on every pull request; deploying updates to your server |
 
 The same guides are published in the [project wiki](https://github.com/Nayemuzzaman/Clouden/wiki).
 
@@ -368,6 +373,20 @@ cd frontend && npm test && npm run typecheck && npm run lint && npm run build
 Integration tests against a real PostgreSQL server, the end-to-end procedure and a
 production-mode test on your workstation: [docs/development.md](docs/development.md).
 Commits follow `type: summary` (`feat`, `fix`, `test`, `docs`, `refactor`, `chore`).
+
+## CI/CD
+
+GitHub Actions ([docs/ci-cd.md](docs/ci-cd.md)):
+
+- **CI** on every pull request and push to `main`: backend (Pint, Larastan, PHPUnit with
+  a real PostgreSQL 17), frontend (lint, typecheck, tests, build), scripts (ShellCheck,
+  installer guard rails in Ubuntu 24.04, compose validation), and a **production-mode
+  smoke test** that starts the real stack, deploys the example app cloned from the branch
+  on GitHub, kills the worker mid-deployment, takes backups and re-creates the control
+  plane.
+- **Deploy** (manual, or automatic after green CI on `main` when `AUTO_DEPLOY=true`):
+  runs `scripts/update.sh` on your server over SSH with a pinned host key and a deploy
+  user that may only run that script.
 
 ## Project status
 
