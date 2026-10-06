@@ -4,6 +4,7 @@ use App\Http\Middleware\EnsureAdmin;
 use App\Http\Middleware\RequireRecentPassword;
 use App\Http\Middleware\SecureHeaders;
 use App\Services\Databases\DatabaseException;
+use App\Services\Deployment\AlreadyLive;
 use App\Services\Docker\DockerException;
 use App\Services\Routing\RoutingException;
 use App\Services\Source\SourceException;
@@ -35,7 +36,15 @@ return Application::configure(basePath: dirname(__DIR__))
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
         // Expected, user-actionable failures are returned with their message.
-        $exceptions->render(function (DomainException|DatabaseException|SourceException $e, Request $request) {
+        $exceptions->render(function (AlreadyLive $e, Request $request) {
+            return response()->json(['message' => $e->getMessage(), 'code' => 'up_to_date', 'commit' => [
+                'sha' => $e->commit->sha, 'short_sha' => $e->commit->shortSha(), 'message' => $e->commit->title(),
+            ], 'production' => ['id' => $e->production->id, 'number' => $e->production->number]], 409);
+        });
+        $exceptions->render(function (SourceException $e, Request $request) {
+            return response()->json(['message' => $e->getMessage(), 'code' => 'source_'.$e->kind], 422);
+        });
+        $exceptions->render(function (DomainException|DatabaseException $e, Request $request) {
             return response()->json(['message' => $e->getMessage()], 422);
         });
         $exceptions->render(function (RoutingException $e, Request $request) {

@@ -20,6 +20,10 @@ use Illuminate\Support\Carbon;
  * @property string|null $commit_sha
  * @property string|null $commit_message
  * @property string|null $commit_author
+ * @property Carbon|null $commit_committed_at
+ * @property string|null $repository
+ * @property string|null $source_visibility
+ * @property string|null $webhook_delivery_id
  * @property string|null $image_tag
  * @property string|null $image_id
  * @property bool $image_available
@@ -52,6 +56,7 @@ class Deployment extends Model
 
     protected $fillable = [
         'project_id', 'number', 'type', 'trigger', 'status', 'branch', 'commit_sha', 'commit_message', 'commit_author',
+        'commit_committed_at', 'repository', 'source_visibility', 'webhook_delivery_id',
         'image_tag', 'image_id', 'image_available', 'container_id', 'container_name', 'rollback_of_id', 'initiated_by',
         'failure_stage', 'failure_reason', 'failure_detail', 'queued_at', 'started_at', 'build_started_at',
         'build_finished_at', 'finished_at',
@@ -62,6 +67,7 @@ class Deployment extends Model
         return [
             'status' => DeploymentStatus::class,
             'image_available' => 'boolean',
+            'commit_committed_at' => 'datetime',
             'queued_at' => 'datetime',
             'started_at' => 'datetime',
             'build_started_at' => 'datetime',

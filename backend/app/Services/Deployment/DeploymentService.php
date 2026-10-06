@@ -8,30 +8,71 @@ use App\Models\Deployment;
 use App\Models\Project;
 use App\Models\User;
 use App\Services\Audit\AuditLogger;
+use App\Services\Source\CommitInfo;
+use App\Services\Source\SourceFetcher;
 use DomainException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Creates deployments. All creation goes through one transaction that locks the
- * project row, so concurrent requests (double clicks, duplicate webhooks,
- * deletion) are serialized:
- *  - a project being deleted cannot get new deployments;
- *  - a newer request supersedes deployments that are still waiting in the queue;
- *  - the job itself holds a per-project lock, so only one deployment of a project
- *    runs at a time and later ones wait.
+ * Creates deployments. Manual "Deploy Latest", GitHub webhooks, rollbacks and
+ * redeploys all come through here and run through the same DeploymentPipeline.
+ *
+ * Creation happens in one transaction that locks the project row, so concurrent
+ * requests (double clicks, a push arriving while the administrator clicks Deploy
+ * Latest, duplicate webhooks, deletion) are serialized:
+ *  - every source deployment is tied to an exact commit SHA when it is created;
+ *  - a request for a commit that is already being deployed reuses that deployment;
+ *  - at most ONE deployment waits per project: a newer request supersedes a waiting
+ *    one that has not started (a started deployment is never skipped);
+ *  - the job holds a per-project lock, so one deployment runs at a time.
  */
 class DeploymentService
 {
-    public function __construct(private readonly AuditLogger $audit) {}
+    public function __construct(
+        private readonly AuditLogger $audit,
+        private readonly SourceFetcher $fetcher,
+    ) {}
 
-    public function deploy(Project $project, ?User $user, string $trigger = 'manual', ?string $commitSha = null): Deployment
+    /**
+     * "Deploy Latest": read the head of the production branch now and deploy
+     * exactly that commit. Throws AlreadyLive when production already runs it
+     * (unless $force), and SourceException when GitHub cannot be read.
+     */
+    public function deployLatest(Project $project, ?User $user, bool $force = false): QueuedDeployment
     {
-        if ($project->source_type !== Project::SOURCE_IMAGE && $project->repository === null) {
-            throw new DomainException('Connect a repository before deploying.');
+        if ($project->isDeleting()) {
+            throw new DomainException('The project is being deleted.');
+        }
+        if ($project->source_type === Project::SOURCE_IMAGE) {
+            return $this->create($project, $user, Deployment::TYPE_DEPLOY, 'manual', []);
+        }
+        $repository = $project->repository ?? throw new DomainException('Connect a repository before deploying.');
+        $commit = $this->fetcher->latestCommit($repository);
+
+        $production = $project->currentDeployment;
+        if (! $force && $production !== null && $production->commit_sha === $commit->sha) {
+            throw new AlreadyLive($production, $commit);
         }
 
-        return $this->create($project, $user, Deployment::TYPE_DEPLOY, $trigger, ['commit_sha' => $commitSha, 'branch' => $project->repository?->branch]);
+        return $this->deployCommit($project, $user, 'manual', $commit);
+    }
+
+    /** Deploy one exact commit of the production branch (manual SHA, webhook push, retry). */
+    public function deployCommit(Project $project, ?User $user, string $trigger, CommitInfo $commit, ?string $deliveryId = null): QueuedDeployment
+    {
+        $repository = $project->repository ?? throw new DomainException('Connect a repository before deploying.');
+
+        return $this->create($project, $user, Deployment::TYPE_DEPLOY, $trigger, [
+            'commit_sha' => $commit->sha,
+            'commit_message' => $commit->title(),
+            'commit_author' => $commit->author,
+            'commit_committed_at' => $commit->committedAt,
+            'branch' => $repository->branch,
+            'repository' => $repository->displayName(),
+            'source_visibility' => $repository->visibility,
+            'webhook_delivery_id' => $deliveryId,
+        ]);
     }
 
     public function rollback(Project $project, Deployment $target, ?User $user): Deployment
@@ -46,7 +87,9 @@ class DeploymentService
             throw new DomainException('That deployment is already live.');
         }
 
-        return $this->create($project, $user, Deployment::TYPE_ROLLBACK, 'manual', ['rollback_of_id' => $target->id]);
+        return $this->create($project, $user, Deployment::TYPE_ROLLBACK, 'manual', [
+            'rollback_of_id' => $target->id, 'branch' => $target->branch, 'repository' => $target->repository, 'source_visibility' => $target->source_visibility,
+        ])->deployment;
     }
 
     /** Recreate the current version with the latest environment variables and settings. */
@@ -57,7 +100,9 @@ class DeploymentService
             throw new DomainException('There is no live deployment to restart with new settings. Deploy the project first.');
         }
 
-        return $this->create($project, $user, Deployment::TYPE_REDEPLOY, 'manual', ['rollback_of_id' => $current->id]);
+        return $this->create($project, $user, Deployment::TYPE_REDEPLOY, 'manual', [
+            'rollback_of_id' => $current->id, 'branch' => $current->branch, 'repository' => $current->repository, 'source_visibility' => $current->source_visibility,
+        ])->deployment;
     }
 
     public function cancel(Deployment $deployment): bool
@@ -66,7 +111,7 @@ class DeploymentService
             return false;
         }
         if ($deployment->status === DeploymentStatus::Queued) {
-            $updated = Deployment::query()->whereKey($deployment->id)->where('status', DeploymentStatus::Queued->value)
+            $updated = Deployment::query()->whereKey($deployment->id)->where('status', DeploymentStatus::Queued->value)->whereNull('started_at')
                 ->update(['status' => DeploymentStatus::Cancelled->value, 'finished_at' => now(), 'failure_reason' => 'Cancelled by the administrator.']);
             if ($updated) {
                 return true;
@@ -79,28 +124,37 @@ class DeploymentService
     }
 
     /** @param array<string, mixed> $attributes */
-    private function create(Project $project, ?User $user, string $type, string $trigger, array $attributes): Deployment
+    private function create(Project $project, ?User $user, string $type, string $trigger, array $attributes): QueuedDeployment
     {
-        $deployment = DB::transaction(function () use ($project, $user, $type, $trigger, $attributes) {
+        $result = DB::transaction(function () use ($project, $user, $type, $trigger, $attributes) {
             /** @var Project $locked */
             $locked = Project::query()->whereKey($project->id)->lockForUpdate()->firstOrFail();
             if ($locked->isDeleting()) {
                 throw new DomainException('The project is being deleted.');
             }
 
-            $number = (int) Deployment::query()->where('project_id', $locked->id)->max('number') + 1;
+            $sha = $attributes['commit_sha'] ?? null;
+            if ($type === Deployment::TYPE_DEPLOY && $sha !== null) {
+                $inProgress = Deployment::query()->where('project_id', $locked->id)->where('type', Deployment::TYPE_DEPLOY)
+                    ->where('commit_sha', $sha)->whereIn('status', DeploymentStatus::activeValues())->orderByDesc('number')->first();
+                if ($inProgress !== null) {
+                    return new QueuedDeployment($inProgress, reused: true);
+                }
+            }
 
+            $number = (int) Deployment::query()->where('project_id', $locked->id)->max('number') + 1;
+            $label = "deployment #{$number}".($sha ? ' (commit '.substr($sha, 0, 7).')' : '');
             Deployment::query()
                 ->where('project_id', $locked->id)
                 ->where('status', DeploymentStatus::Queued->value)
                 ->whereNull('started_at')
                 ->update([
-                    'status' => DeploymentStatus::Cancelled->value,
+                    'status' => DeploymentStatus::Superseded->value,
                     'finished_at' => now(),
-                    'failure_reason' => "Superseded by deployment #{$number}.",
+                    'failure_reason' => "Superseded by {$label} before it started.",
                 ]);
 
-            return Deployment::query()->create([
+            return new QueuedDeployment(Deployment::query()->create([
                 'project_id' => $locked->id,
                 'number' => $number,
                 'type' => $type,
@@ -109,15 +163,19 @@ class DeploymentService
                 'initiated_by' => $user?->id,
                 'queued_at' => now(),
                 ...$attributes,
-            ]);
+            ]));
         });
 
+        if ($result->reused) {
+            return $result;
+        }
+        $deployment = $result->deployment;
         RunDeployment::dispatch($deployment->id, $project->id)->afterCommit();
 
         $this->audit->log('deployment.'.($type === Deployment::TYPE_DEPLOY ? 'started' : $type), $deployment, metadata: [
-            'project' => $project->slug, 'number' => $deployment->number, 'trigger' => $trigger,
+            'project' => $project->slug, 'number' => $deployment->number, 'trigger' => $trigger, 'commit' => $deployment->shortSha(),
         ], label: $project->name.' #'.$deployment->number, userId: $user?->id);
 
-        return $deployment;
+        return $result;
     }
 }

@@ -49,13 +49,18 @@ class DeploymentPipelineTest extends TestCase
             }
         });
 
-        $sha = 0;
-        Http::fake(function ($request) use (&$sha) {
+        // Every "Deploy Latest" reads the branch head: each read returns a new commit
+        // (aaaa…, bbbb…, …). The pipeline then asks for exactly that commit.
+        $head = 0;
+        Http::fake(function ($request) use (&$head) {
             $url = $request->url();
-            if (str_contains($url, '/commits/')) {
-                $sha++;
+            if (str_contains($url, '/branches/main')) {
+                $head++;
 
-                return Http::response(['sha' => str_repeat(dechex($sha + 9), 40), 'commit' => ['message' => "Commit {$sha}", 'author' => ['name' => 'Ada']]]);
+                return Http::response(['name' => 'main', 'commit' => ['sha' => str_repeat(dechex($head + 9), 40), 'commit' => ['message' => "Commit {$head}", 'author' => ['name' => 'Ada', 'date' => '2026-10-06T10:00:00Z']]]]);
+            }
+            if (preg_match('#/commits/([0-9a-f]{40})$#', $url, $m)) {
+                return Http::response(['sha' => $m[1], 'commit' => ['message' => 'Commit '.(hexdec($m[1][0]) - 9), 'author' => ['name' => 'Ada', 'date' => '2026-10-06T10:00:00Z']]]);
             }
             if (str_contains($url, '/tarball/')) {
                 return Http::response('fake-archive');
@@ -416,10 +421,18 @@ class DeploymentPipelineTest extends TestCase
         $this->actingAsAdmin();
         Http::fake(fn () => throw new ConnectionException('timeout'));
 
-        $failed = $this->deploy()->fresh();
+        // Deploy Latest cannot read the branch head: nothing is queued, the reason is returned.
+        $this->postJson('/api/v1/projects/shop/deployments')->assertStatus(422)
+            ->assertJsonPath('code', 'source_unavailable')
+            ->assertJsonPath('message', fn ($m) => str_contains($m, 'GitHub could not be reached'));
+        $this->assertSame(0, Deployment::query()->count());
 
+        // A deployment of a known commit (webhook, retry) fails while fetching, production untouched.
+        $id = $this->postJson('/api/v1/projects/shop/deployments', ['commit_sha' => str_repeat('c', 40)])->assertStatus(202)->json('data.id');
+        $failed = Deployment::query()->findOrFail($id);
         $this->assertSame('cloning', $failed->failure_stage);
         $this->assertStringContainsString('GitHub could not be reached', $failed->failure_reason);
+        $this->assertSame('unreachable', $this->project->repository->fresh()->access_status);
     }
 
     public function test_low_disk_space_stops_before_building(): void
@@ -441,8 +454,8 @@ class DeploymentPipelineTest extends TestCase
         $first = $this->postJson('/api/v1/projects/shop/deployments')->assertStatus(202)->json('data.id');
         $second = $this->postJson('/api/v1/projects/shop/deployments')->assertStatus(202)->json('data.id');
 
-        $this->assertSame(DeploymentStatus::Cancelled, Deployment::query()->find($first)->status);
-        $this->assertSame('Superseded by deployment #2.', Deployment::query()->find($first)->failure_reason);
+        $this->assertSame(DeploymentStatus::Superseded, Deployment::query()->find($first)->status);
+        $this->assertSame('Superseded by deployment #2 (commit bbbbbbb) before it started.', Deployment::query()->find($first)->failure_reason);
         $this->assertSame(DeploymentStatus::Queued, Deployment::query()->find($second)->status);
         Bus::assertDispatchedTimes(RunDeployment::class, 2);
     }

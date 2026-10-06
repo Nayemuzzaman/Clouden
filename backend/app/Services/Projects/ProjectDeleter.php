@@ -12,7 +12,6 @@ use App\Services\Deployment\NetworkManager;
 use App\Services\Docker\DockerClient;
 use App\Services\Instance;
 use App\Services\Routing\CaddyConfigurator;
-use App\Services\Source\GitHubClient;
 use Throwable;
 
 /** Removes a project's runtime resources. Runs in a queued job holding the project's lock. */
@@ -26,6 +25,7 @@ class ProjectDeleter
         private readonly BackupStorage $storage,
         private readonly AuditLogger $audit,
         private readonly Instance $instance,
+        private readonly AutoDeployService $autoDeploy,
     ) {}
 
     public function run(Operation $operation, Project $project): void
@@ -66,16 +66,11 @@ class ProjectDeleter
                 $warnings[] = 'Network: '.$e->getMessage();
             }
 
-            // 5. GitHub webhook
-            $repository = $project->repository;
-            if ($repository?->webhook_id && $repository->full_name) {
-                try {
-                    GitHubClient::forConnection()->deleteWebhook($repository->full_name, (int) $repository->webhook_id);
-                } catch (Throwable $e) {
-                    // GitHub being unreachable must not block deleting the project; the
-                    // orphaned webhook only receives 404s from now on.
-                    $warnings[] = 'GitHub webhook was not removed ('.$e->getMessage().'); delete it in the repository settings';
-                }
+            // 5. GitHub webhook (only the one PrivateCloud created). GitHub being unreachable
+            // must not block deleting the project: the orphan is recorded in the audit log
+            // and a notification, and only receives 404 replies from now on.
+            if (($warning = $this->autoDeploy->removeWebhook($project)) !== null) {
+                $warnings[] = $warning;
             }
 
             // 6. Optional: databases

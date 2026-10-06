@@ -10,6 +10,7 @@ use App\Http\Resources\ProjectResource;
 use App\Models\Project;
 use App\Services\Audit\AuditLogger;
 use App\Services\Projects\ProjectService;
+use App\Services\Projects\RepositoryConnection;
 use App\Services\Routing\CaddyConfigurator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -45,27 +46,20 @@ class ProjectController extends Controller
         return new ProjectResource($project->load(self::RELATIONS));
     }
 
-    public function update(UpdateProjectRequest $request, Project $project, CaddyConfigurator $caddy): ProjectResource
+    public function update(UpdateProjectRequest $request, Project $project, CaddyConfigurator $caddy, RepositoryConnection $connection): JsonResponse
     {
         $data = $request->validated();
         $repositoryFields = array_intersect_key($data, array_flip(['branch', 'repository', 'repository_url']));
         $projectFields = array_diff_key($data, $repositoryFields);
 
+        $warnings = [];
         if ($repositoryFields !== [] && $project->repository) {
-            $updates = [];
-            if (isset($repositoryFields['branch'])) {
-                $updates['branch'] = $repositoryFields['branch'];
-            }
-            if (isset($repositoryFields['repository']) && $project->source_type === Project::SOURCE_GITHUB) {
-                $updates['full_name'] = $repositoryFields['repository'];
-                $updates['url'] = 'https://github.com/'.$repositoryFields['repository'].'.git';
-            }
-            if (isset($repositoryFields['repository_url']) && $project->source_type === Project::SOURCE_GIT) {
-                $updates['url'] = $repositoryFields['repository_url'];
-            }
-            if ($updates !== []) {
-                $project->repository->update([...$updates, 'latest_commit_sha' => null, 'latest_commit_message' => null, 'latest_commit_author' => null]);
-            }
+            // Verified against GitHub first; the live deployment is not touched.
+            $warnings = $connection->change($project, array_filter([
+                'branch' => $repositoryFields['branch'] ?? null,
+                'repository' => $project->source_type === Project::SOURCE_GITHUB ? ($repositoryFields['repository'] ?? null) : null,
+                'repository_url' => $project->source_type === Project::SOURCE_GIT ? ($repositoryFields['repository_url'] ?? null) : null,
+            ], fn ($v) => $v !== null));
         }
 
         $portChanged = isset($projectFields['port']) && (int) $projectFields['port'] !== $project->port;
@@ -75,7 +69,7 @@ class ProjectController extends Controller
         }
         $this->audit->log('project.updated', $project, metadata: ['fields' => array_keys($data)]);
 
-        return new ProjectResource($project->fresh()->load(self::RELATIONS));
+        return (new ProjectResource($project->fresh()->load(self::RELATIONS)))->additional(['warnings' => $warnings])->response();
     }
 
     public function deletionImpact(Project $project): JsonResponse

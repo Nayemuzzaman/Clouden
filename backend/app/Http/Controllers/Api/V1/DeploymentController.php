@@ -8,6 +8,7 @@ use App\Models\Deployment;
 use App\Models\Project;
 use App\Services\Deployment\DeploymentService;
 use App\Services\Logs\LogReader;
+use App\Services\Source\CommitInfo;
 use App\Services\Source\GitRefs;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -27,15 +28,41 @@ class DeploymentController extends Controller
         );
     }
 
+    /**
+     * Deploy Latest (no body): read the head of the production branch now and
+     * deploy exactly that commit; 409 "up_to_date" when production already runs
+     * it (send force=true to rebuild it anyway). With commit_sha: deploy that
+     * exact commit again (e.g. "Retry" after a failure).
+     */
     public function store(Request $request, Project $project): JsonResponse
     {
-        $data = $request->validate(['commit_sha' => ['nullable', 'string', 'size:40']]);
-        if (! empty($data['commit_sha']) && ! GitRefs::isValidSha($data['commit_sha'])) {
+        $data = $request->validate(['commit_sha' => ['nullable', 'string', 'size:40'], 'force' => ['sometimes', 'boolean']]);
+        $sha = $data['commit_sha'] ?? null;
+        if ($sha !== null && ! GitRefs::isValidSha($sha)) {
             return response()->json(['message' => 'Invalid commit SHA.'], 422);
         }
-        $deployment = $this->deployments->deploy($project, $request->user(), 'manual', $data['commit_sha'] ?? null);
 
-        return (new DeploymentResource($deployment->load('project')))->response()->setStatusCode(202);
+        $result = $sha !== null && $project->source_type !== Project::SOURCE_IMAGE
+            ? $this->deployments->deployCommit($project, $request->user(), 'manual', $this->knownCommit($project, $sha))
+            : $this->deployments->deployLatest($project, $request->user(), (bool) ($data['force'] ?? false));
+
+        return (new DeploymentResource($result->deployment->load('project')))
+            ->additional(['meta' => [
+                'reused' => $result->reused,
+                'message' => $result->reused ? "Commit {$result->deployment->shortSha()} is already being deployed (deployment #{$result->deployment->number})." : null,
+            ]])
+            ->response()->setStatusCode(202);
+    }
+
+    /** Commit details already recorded for this SHA (the pipeline fills them in from GitHub otherwise). */
+    private function knownCommit(Project $project, string $sha): CommitInfo
+    {
+        $previous = $project->deployments()->where('commit_sha', $sha)->whereNotNull('commit_message')->latest('number')->first();
+        if ($previous === null && $project->repository?->latest_commit_sha === $sha) {
+            return new CommitInfo($sha, $project->repository->latest_commit_message, $project->repository->latest_commit_author, $project->repository->latest_commit_at?->toIso8601String());
+        }
+
+        return new CommitInfo($sha, $previous?->commit_message, $previous?->commit_author, $previous?->commit_committed_at?->toIso8601String());
     }
 
     public function redeploy(Request $request, Project $project): JsonResponse

@@ -45,8 +45,10 @@ class RecoverInterrupted extends Command
 
     private function recoverDeployments(DockerClient $docker, CaddyConfigurator $caddy, Notifier $notifier): int
     {
+        // Running stages, plus deployments claimed by the worker (started) that never left "queued".
         $interrupted = Deployment::query()->with('project.currentDeployment')
-            ->whereIn('status', array_values(array_diff(DeploymentStatus::activeValues(), [DeploymentStatus::Queued->value])))
+            ->where(fn ($q) => $q->whereIn('status', array_values(array_diff(DeploymentStatus::activeValues(), [DeploymentStatus::Queued->value])))
+                ->orWhere(fn ($q) => $q->where('status', DeploymentStatus::Queued->value)->whereNotNull('started_at')))
             ->get();
         if ($interrupted->isEmpty()) {
             return self::SUCCESS;
@@ -138,7 +140,7 @@ class RecoverInterrupted extends Command
     public static function releaseProjectLock(int $projectId): void
     {
         try {
-            Cache::lock('laravel-queue-overlap:project:'.$projectId)->forceRelease();
+            Cache::lock(Project::lockName($projectId))->forceRelease();
         } catch (Throwable) {
             // cache unavailable: the lock expires on its own
         }

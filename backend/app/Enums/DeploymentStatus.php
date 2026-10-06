@@ -18,6 +18,8 @@ enum DeploymentStatus: string
     case Success = 'success';
     case Failed = 'failed';
     case Cancelled = 'cancelled';
+    // A newer request replaced this deployment before it started.
+    case Superseded = 'superseded';
 
     /** @return list<self> */
     public static function active(): array
@@ -53,6 +55,7 @@ enum DeploymentStatus: string
             self::Success => 'Successful',
             self::Failed => 'Failed',
             self::Cancelled => 'Cancelled',
+            self::Superseded => 'Superseded',
         };
     }
 }

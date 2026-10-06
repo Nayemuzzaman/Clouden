@@ -20,12 +20,17 @@ class ProjectTest extends TestCase
 
     private function fakeGitHub(): void
     {
+        $branch = fn (string $sha) => Http::response(['name' => 'main', 'commit' => [
+            'sha' => $sha,
+            'commit' => ['message' => "Fix homepage layout\n\nDetails", 'author' => ['name' => 'Ada', 'date' => '2026-10-01T10:00:00Z']],
+        ]]);
         Http::fake([
-            'api.github.com/repos/acme/shop/commits/*' => Http::response([
-                'sha' => str_repeat('c', 40),
-                'commit' => ['message' => "Fix homepage layout\n\nDetails", 'author' => ['name' => 'Ada', 'date' => '2026-10-01T10:00:00Z']],
-            ]),
-            'api.github.com/repos/missing/repo/commits/*' => Http::response(['message' => 'Not Found'], 404),
+            'api.github.com/repos/acme/shop/branches/main' => $branch(str_repeat('c', 40)),
+            'api.github.com/repos/acme/shop/branches/develop' => $branch(str_repeat('d', 40)),
+            'api.github.com/repos/acme/shop/branches/*' => Http::response(['message' => 'Branch not found'], 404),
+            'api.github.com/repos/acme/shop' => Http::response(['full_name' => 'acme/shop', 'private' => false, 'default_branch' => 'main']),
+            'api.github.com/repos/down/repo*' => Http::response(['message' => 'Server Error'], 502),
+            'api.github.com/*' => Http::response(['message' => 'Not Found'], 404),
         ]);
     }
 
@@ -99,18 +104,34 @@ class ProjectTest extends TestCase
         $this->assertSame(0, Project::query()->count());
     }
 
-    public function test_project_creation_reports_unreachable_repository_as_warning(): void
+    public function test_project_creation_verifies_repository_and_branch(): void
     {
         $this->fakeGitHub();
         $this->actingAsAdmin();
 
+        // GitHub says no: nothing is created.
         $this->postJson('/api/v1/projects', ['name' => 'Ghost', 'source_type' => 'github', 'repository' => 'missing/repo', 'branch' => 'main'])
+            ->assertJsonValidationErrors(['repository' => 'not found']);
+        $this->postJson('/api/v1/projects', ['name' => 'Ghost', 'source_type' => 'github', 'repository' => 'acme/shop', 'branch' => 'nope'])
+            ->assertJsonValidationErrors(['branch' => 'does not exist']);
+        $this->assertSame(0, Project::query()->count());
+
+        // GitHub unreachable: created, with a warning (it is checked again on deploy).
+        $this->postJson('/api/v1/projects', ['name' => 'Later', 'source_type' => 'github', 'repository' => 'down/repo', 'branch' => 'main'])
             ->assertCreated()
-            ->assertJsonPath('warnings.0', fn ($w) => str_contains($w, 'not found'));
+            ->assertJsonPath('warnings.0', fn ($w) => str_contains($w, 'could not be checked'));
+
+        // Success records the head commit and the visibility.
+        $this->postJson('/api/v1/projects', ['name' => 'Shop', 'source_type' => 'github', 'repository' => 'acme/shop', 'branch' => 'main'])
+            ->assertCreated()
+            ->assertJsonPath('data.repository.visibility', 'public')
+            ->assertJsonPath('data.repository.latest_commit.sha', str_repeat('c', 40))
+            ->assertJsonPath('data.sync.state', 'out_of_sync');
     }
 
     public function test_update_settings(): void
     {
+        $this->fakeGitHub();
         $this->actingAsAdmin();
         $project = $this->project();
 

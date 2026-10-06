@@ -27,11 +27,19 @@ use Throwable;
 /**
  * Runs one deployment:
  *
- *   queued → cloning → building → starting → health_checking → routing → success
+ *   queued → cloning (fetching) → building → starting → health_checking → routing → success
  *
- * The current production container is never touched until the new container
- * has passed its health check AND traffic has been switched to it. Any failure
- * before that point leaves production exactly as it was.
+ * A source deployment builds exactly the commit SHA recorded when it was created
+ * (webhook push, or the branch head read by "Deploy Latest"); the fetched tree
+ * is verified to be that commit. The current production container is never
+ * touched until the new container has passed its health check AND traffic has
+ * been switched to it AND that is recorded. Any failure before that point leaves
+ * production exactly as it was.
+ *
+ * Production state is recorded after Caddy accepted the new route; if recording
+ * fails the route is restored from the database (which still names the previous
+ * deployment), and if the worker dies in between, privatecloud:recover-interrupted
+ * does the same when the worker restarts.
  */
 class DeploymentPipeline
 {
@@ -63,9 +71,14 @@ class DeploymentPipeline
 
     public function run(Deployment $deployment): void
     {
+        // Claim atomically: a deployment runs at most once even if its job is delivered twice,
+        // and one that was cancelled or superseded while waiting never starts.
+        $claimed = Deployment::query()->whereKey($deployment->id)
+            ->where('status', DeploymentStatus::Queued->value)->whereNull('started_at')
+            ->update(['started_at' => now()]);
         $deployment->refresh();
-        if ($deployment->status !== DeploymentStatus::Queued) {
-            return; // cancelled, superseded, or already processed
+        if ($claimed === 0) {
+            return;
         }
 
         /** @var Project $project */
@@ -78,7 +91,6 @@ class DeploymentPipeline
             return;
         }
 
-        $deployment->update(['started_at' => now()]);
         if ($project->current_deployment_id === null) {
             $project->update(['status' => ProjectStatus::Deploying]);
         }
@@ -120,15 +132,20 @@ class DeploymentPipeline
             $this->transition($deployment, DeploymentStatus::Routing, $log, 'Switching traffic to the new container');
             $previous = $project->currentDeployment;
             if ($project->domains()->exists()) {
-                $this->caddy->sync([$project->id => $candidate.':'.$project->port]);
+                $upstream = $candidate.':'.$project->port;
+                $this->caddy->sync([$project->id => $upstream]);
                 $routed = true;
+                // Caddy validated and loaded the configuration; confirm it is the one we wrote.
+                if ($this->caddy->routedUpstream($project) !== $upstream) {
+                    throw new RoutingException('The routing configuration does not point at the new container after the reload.');
+                }
                 $log->system('Routing updated: '.$project->domains()->pluck('hostname')->implode(', '));
             } else {
                 $log->system('No domain configured yet. The application is running but not publicly reachable — add a domain to publish it.', 'warn');
             }
 
             DB::transaction(function () use ($project, $deployment, $candidate, $previous) {
-                $project->update(['current_deployment_id' => $deployment->id, 'status' => ProjectStatus::Running]);
+                $project->update(['current_deployment_id' => $deployment->id, 'status' => ProjectStatus::Running, ...$this->productionIntent($project, $deployment)]);
                 $deployment->update(['status' => DeploymentStatus::Success, 'finished_at' => now()]);
                 Container::query()->where('name', $candidate)->whereNull('removed_at')->update(['role' => Container::ROLE_PRODUCTION, 'state' => 'running']);
                 if ($previous?->container_name) {
@@ -197,17 +214,29 @@ class DeploymentPipeline
 
         $this->ensureDiskSpace();
         $this->transition($deployment, DeploymentStatus::Cloning, $log, 'Fetching source code');
+        if ($deployment->commit_sha === null) {
+            // Deployments are normally created with their exact commit; resolve and pin one before fetching anything.
+            $head = $this->fetcher->latestCommit($repository);
+            $deployment->update(['commit_sha' => $head->sha, 'branch' => $repository->branch, 'repository' => $repository->displayName(), 'source_visibility' => $repository->visibility]);
+            $log->system("Resolved {$repository->branch} to commit {$head->shortSha()}");
+        }
+        $sha = (string) $deployment->commit_sha;
+
+        // One directory per deployment, named by its internal id only.
         $buildDir = rtrim((string) config('privatecloud.data_dir'), '/').'/builds/deployment-'.$deployment->id;
         File::deleteDirectory($buildDir);
 
-        $commit = $this->fetcher->fetch($repository, $deployment->commit_sha, $buildDir, fn (string $line) => $log->write('system', $line));
+        $commit = $this->fetcher->fetch($repository, $sha, $buildDir, fn (string $line) => $log->write('system', $line));
         $deployment->update([
-            'commit_sha' => $commit->sha,
-            'commit_message' => $commit->title(),
-            'commit_author' => $commit->author,
-            'branch' => $repository->branch,
+            'commit_message' => $commit->title() ?? $deployment->commit_message,
+            'commit_author' => $commit->author ?? $deployment->commit_author,
+            'commit_committed_at' => $commit->committedAt ?? $deployment->commit_committed_at,
+            'branch' => $deployment->branch ?? $repository->branch,
+            'repository' => $deployment->repository ?? $repository->displayName(),
+            'source_visibility' => $repository->visibility ?? $deployment->source_visibility,
         ]);
-        $log->system("Commit {$commit->shortSha()}: ".($commit->title() ?? ''));
+        $log->system("Commit {$commit->shortSha()} of {$deployment->branch}: ".($commit->title() ?? ''));
+        $log->system('Source verified: exact commit, no git metadata or credentials in the build context');
 
         $this->guardCancelled($deployment);
 
@@ -391,6 +420,31 @@ class DeploymentPipeline
         $this->restoreProjectStatus($project);
         $this->audit->log('deployment.failed', $deployment, 'failure', ['project' => $project->slug, 'number' => $deployment->number, 'stage' => $stage], $project->name.' #'.$deployment->number, $deployment->initiated_by);
         $this->notifier->notify('deployment.failed', "{$project->name} deployment failed", "Deployment #{$deployment->number} failed while ".str_replace('_', ' ', $stage).': '.mb_substr($reason, 0, 200), 'error', "/projects/{$project->slug}/deployments/{$deployment->id}");
+    }
+
+    /**
+     * How a successful deployment changes the "intent" of production:
+     *  - a deployment of the branch clears an earlier rollback (auto deploy resumes);
+     *  - a rollback records that production was intentionally moved away from the
+     *    branch head, so auto deploy does not immediately redeploy that same head;
+     *  - a redeploy keeps whatever was there.
+     *
+     * @return array<string, mixed>
+     */
+    private function productionIntent(Project $project, Deployment $deployment): array
+    {
+        if ($deployment->type === Deployment::TYPE_DEPLOY) {
+            return ['rolled_back_at' => null, 'rollback_hold_sha' => null];
+        }
+        if ($deployment->type !== Deployment::TYPE_ROLLBACK) {
+            return [];
+        }
+        $head = $project->repository()->value('latest_commit_sha') ?? $project->currentDeployment?->commit_sha;
+        if ($head === null || $head === $deployment->commit_sha) {
+            return ['rolled_back_at' => null, 'rollback_hold_sha' => null];
+        }
+
+        return ['rolled_back_at' => now(), 'rollback_hold_sha' => $head];
     }
 
     private function restoreProjectStatus(Project $project): void

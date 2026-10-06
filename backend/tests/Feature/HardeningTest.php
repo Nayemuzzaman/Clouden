@@ -267,7 +267,8 @@ class HardeningTest extends TestCase
         $this->assertNull(Project::query()->find($project->id));
         $operation = Operation::query()->where('type', 'project.delete')->firstOrFail();
         $this->assertSame(JobStatus::Success, $operation->status);
-        $this->assertStringContainsString('GitHub webhook was not removed', (string) $operation->message);
+        $this->assertStringContainsString('GitHub webhook #77 of acme/shop could not be removed', (string) $operation->message);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'github.webhook_orphaned', 'result' => 'failure']);
     }
 
     // ---------------------------------------------------- worker restart recovery
@@ -419,15 +420,18 @@ class HardeningTest extends TestCase
     {
         $this->actingAsAdmin();
         $project = $this->project(['slug' => 'shop']);
-        $project->repository->update(['provider' => Project::SOURCE_GITHUB, 'full_name' => 'acme/shop']);
+        $project->repository->update(['provider' => Project::SOURCE_GITHUB, 'full_name' => 'acme/shop', 'visibility' => 'private']);
         GithubConnection::query()->create(['account_login' => 'acme', 'token' => 'github_pat_expired_token_000000']);
         Http::fake([
-            '*/repos/acme/shop/commits/*' => Http::response(['message' => 'Bad credentials'], 401),
+            '*/repos/acme/shop*' => Http::response(['message' => 'Bad credentials'], 401),
             '*/user' => Http::response(['login' => 'acme', 'name' => 'Acme']),
         ]);
 
-        $this->postJson('/api/v1/projects/shop/refresh-commit')->assertStatus(422)->assertJsonPath('message', 'GitHub rejected the access token. Reconnect GitHub in Settings.');
-        $this->postJson('/api/v1/projects/shop/refresh-commit')->assertStatus(422);
+        $this->postJson('/api/v1/projects/shop/refresh-commit')->assertStatus(422)
+            ->assertJsonPath('message', 'GitHub rejected the access token (expired or revoked). Reconnect GitHub in Settings.')
+            ->assertJsonPath('code', 'source_auth');
+        $this->postJson('/api/v1/projects/shop/refresh-commit')->assertStatus(422)->assertJsonPath('code', 'source_auth');
+        $this->assertSame('auth_failed', $project->repository->fresh()->access_status);
 
         $this->assertNotNull(Setting::get(GitHubClient::TOKEN_REJECTED_SETTING));
         $this->assertSame(1, DB::table('notifications')->where('data', 'like', '%GitHub token rejected%')->count());

@@ -45,6 +45,17 @@ class CaddyConfigurator
         return $deployment->container_name.':'.$project->port;
     }
 
+    /** The upstream ("container:port") the project's current Caddy site file routes to, if any. */
+    public function routedUpstream(Project $project): ?string
+    {
+        $file = rtrim((string) config('privatecloud.caddy.sites_dir'), '/').'/'.$project->slug.'.caddy';
+        if (! is_file($file)) {
+            return null;
+        }
+
+        return preg_match('/^\s*reverse_proxy\s+(\S+)\s*$/m', (string) File::get($file), $m) ? $m[1] : null;
+    }
+
     /** @param array<int, string|null> $upstreamOverrides */
     private function syncLocked(array $upstreamOverrides): void
     {

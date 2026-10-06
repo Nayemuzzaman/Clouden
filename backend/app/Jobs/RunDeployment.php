@@ -51,9 +51,19 @@ class RunDeployment implements ShouldQueue
     public function handle(DeploymentPipeline $pipeline): void
     {
         $deployment = Deployment::query()->find($this->deploymentId);
-        if ($deployment) {
-            $pipeline->run($deployment);
+        if (! $deployment) {
+            return;
         }
+        // Defence in depth behind the per-project lock: never start while another
+        // deployment of the project is past "queued" (it may be switching traffic).
+        $busy = Deployment::query()->where('project_id', $deployment->project_id)->whereKeyNot($deployment->id)
+            ->whereNotNull('started_at')->whereIn('status', DeploymentStatus::activeValues())->exists();
+        if ($busy && $deployment->status === DeploymentStatus::Queued) {
+            $this->release(10);
+
+            return;
+        }
+        $pipeline->run($deployment);
     }
 
     public function failed(?Throwable $exception): void

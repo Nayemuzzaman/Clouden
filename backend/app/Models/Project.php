@@ -41,6 +41,8 @@ use Illuminate\Support\Str;
  * @property int $backup_retention
  * @property Carbon|null $last_scheduled_backup_at
  * @property int|null $current_deployment_id
+ * @property Carbon|null $rolled_back_at
+ * @property string|null $rollback_hold_sha
  * @property Carbon|null $deleting_at
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
@@ -63,7 +65,7 @@ class Project extends Model
         'memory_limit_mb', 'cpu_limit', 'health_check_type', 'health_check_path', 'health_check_status_min',
         'health_check_status_max', 'health_check_timeout', 'health_check_retries', 'health_check_interval',
         'auto_deploy', 'webhook_secret', 'image_retention', 'backup_schedule', 'backup_time', 'backup_retention',
-        'last_scheduled_backup_at', 'current_deployment_id', 'deleting_at',
+        'last_scheduled_backup_at', 'current_deployment_id', 'deleting_at', 'rolled_back_at', 'rollback_hold_sha',
     ];
 
     protected $hidden = ['webhook_secret'];
@@ -79,6 +81,7 @@ class Project extends Model
             'memory_limit_mb' => 'integer',
             'deleting_at' => 'datetime',
             'last_scheduled_backup_at' => 'datetime',
+            'rolled_back_at' => 'datetime',
         ];
     }
 
@@ -158,6 +161,12 @@ class Project extends Model
     public function containers(): HasMany
     {
         return $this->hasMany(Container::class);
+    }
+
+    /** Name of the lock held by the deployment job (Laravel's WithoutOverlapping middleware). */
+    public static function lockName(int $projectId): string
+    {
+        return 'laravel-queue-overlap:project:'.$projectId;
     }
 
     public function hasActiveDeployment(): bool
