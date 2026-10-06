@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (tests, Larastan, Pint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      # Real PostgreSQL 17 for the integration tests (isolation, pg_dump/pg_restore round trip).
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ci-apps-db-password
+        ports: ["15499:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo_pgsql, pgsql, pdo_sqlite, intl, zip, bcmath, pcntl
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/composer
+          key: composer-${{ runner.os }}-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Install PostgreSQL 17 client tools (pg_dump/pg_restore must match the server)
+        run: |
+          sudo apt-get update -qq
+          if ! sudo apt-get install -y -qq postgresql-client-17 >/dev/null 2>&1; then
+            sudo apt-get install -y -qq postgresql-common
+            sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+            sudo apt-get install -y -qq postgresql-client-17
+          fi
+          echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+          pg_dump --version
+
+      - name: Code style (Pint)
+        run: ./vendor/bin/pint --test
+
+      - name: Static analysis (Larastan level 5)
+        run: ./vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+
+      - name: Tests (unit, feature, PostgreSQL integration)
+        env:
+          PC_TEST_APPS_DB_HOST: 127.0.0.1
+          PC_TEST_APPS_DB_PORT: "15499"
+          PC_TEST_APPS_DB_PASSWORD: ci-apps-db-password
+        run: php artisan test
+
+  frontend:
+    name: Frontend (tests, typecheck, lint, build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Lint (oxlint)
+        run: npm run lint
+      - name: Typecheck (strict)
+        run: npm run typecheck
+      - name: Tests (Vitest)
+        run: npm test
+      - name: Production build
+        run: npm run build
+
+  scripts:
+    name: Scripts and installer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: ShellCheck
+        run: shellcheck -S warning scripts/*.sh docker/app/entrypoint.sh .github/ci/*.sh
+      - name: Installer guard rails (Ubuntu 24.04 container)
+        run: docker run --rm -v "$PWD:/src:ro" ubuntu:24.04 bash /src/.github/ci/installer-guards.sh
+      - name: Compose files are valid
+        run: |
+          cp .env.example .env
+          sed -i -e 's/^DB_PASSWORD=$/DB_PASSWORD=ci/' -e 's/^PC_APPS_DB_ADMIN_PASSWORD=$/PC_APPS_DB_ADMIN_PASSWORD=ci/' .env
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config -q
+          docker compose -f docker-compose.yml -f .github/ci/compose.smoke.yml config -q
+          rm .env
+
+  smoke:
+    name: Production-mode smoke test (real Docker)
+    needs: [backend, frontend, scripts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the control-plane image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/app/Dockerfile
+          tags: privatecloud/app:local
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (install, harden, sign in, deploy from GitHub, recover, back up)
+        env:
+          # The example application is cloned from this branch, as a real deployment would.
+          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || format('{0}/{1}.git', github.server_url, github.repository) }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: .github/ci/smoke-test.sh
+
+      - name: Service logs
+        if: failure()
+        run: |
+          for c in privatecloud-app privatecloud-worker privatecloud-tasks privatecloud-scheduler privatecloud-caddy; do
+            echo "::group::$c"; docker logs --tail 200 "$c" 2>&1 || true; echo "::endgroup::"
+          done
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -p pcsmoke -f docker-compose.yml -f .github/ci/compose.smoke.yml down -v --remove-orphans || true
+          docker ps -aq --filter label=privatecloud.managed=true | xargs -r docker rm -f || true
+          rm -f .env

@@ -1,0 +1,17 @@
+.git
+.data
+.env
+**/node_modules
+**/.DS_Store
+backend/vendor
+backend/.env
+backend/database/*.sqlite
+backend/storage/logs/*
+backend/storage/framework/cache/*
+backend/storage/framework/sessions/*
+backend/storage/framework/views/*
+backend/storage/framework/testing
+backend/bootstrap/cache/*.php
+frontend/dist
+docs
+examples

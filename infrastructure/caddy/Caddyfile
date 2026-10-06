@@ -1,0 +1,42 @@
+# Edge web server for PrivateCloud.
+#
+# - Serves the dashboard on PC_DASHBOARD_ADDRESS (e.g. cloud.example.com) with
+#   automatic HTTPS from Let's Encrypt.
+# - Imports one generated file per project from /etc/caddy/sites. Those files are
+#   written by the control plane; do not edit them by hand.
+# - The admin API listens on localhost inside this container only.
+#
+# Caddy is the edge: it does NOT trust X-Forwarded-For from clients, and always
+# passes the address it sees to the API. (Trusting private ranges here would let
+# clients spoof their IP, because Docker's userland proxy makes IPv6 clients
+# appear to come from the private bridge gateway.) If you put a CDN or proxy in
+# front, add "servers { trusted_proxies static <its ranges> }" below.
+{
+	admin localhost:2019
+	{$PC_CADDY_ACME_EMAIL_OPTION}
+}
+
+{$PC_DASHBOARD_ADDRESS} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy privatecloud-app:8000 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+	log {
+		output file /var/log/caddy/dashboard.access.log {
+			mode 0644
+			roll_size 10MiB
+			roll_keep 3
+		}
+	}
+}
+
+import /etc/caddy/sites/*.caddy
+
+# Any hostname that is not configured above or in a project.
+http:// {
+	respond "This domain is not configured on this server." 404
+}

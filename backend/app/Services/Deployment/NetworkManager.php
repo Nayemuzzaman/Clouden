@@ -1,0 +1,113 @@
+<?php
+
+namespace App\Services\Deployment;
+
+use App\Models\Project;
+use App\Services\Docker\DockerClient;
+use App\Services\Docker\DockerException;
+use App\Services\Instance;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Each project gets its own bridge network. Only the platform components that
+ * must reach the application join it:
+ *  - Caddy (to proxy traffic),
+ *  - the deployment worker (to run HTTP health checks),
+ *  - the applications PostgreSQL server, only when the project has a database
+ *    (with the alias "postgres").
+ * Projects therefore cannot reach each other's containers directly.
+ */
+class NetworkManager
+{
+    public function __construct(
+        private readonly DockerClient $docker,
+        private readonly Instance $instance,
+    ) {}
+
+    public function prepare(Project $project): void
+    {
+        $network = $project->networkName();
+        $this->docker->ensureNetwork($network, $this->instance->labels($project));
+
+        $this->attach($network, (string) config('privatecloud.docker.caddy_container'));
+        $this->attach($network, (string) config('privatecloud.docker.worker_container'));
+
+        if ($project->databases()->exists()) {
+            $this->attach($network, (string) config('privatecloud.docker.apps_db_container'), [(string) config('privatecloud.apps_db.app_host_alias')]);
+        }
+    }
+
+    /**
+     * Re-attach platform containers to the networks of deployed projects. Needed after
+     * Caddy or the worker were recreated (upgrade, reboot); runs from the reconciler.
+     *
+     * @param  iterable<Project>  $projects
+     */
+    public function repair(iterable $projects): int
+    {
+        $repaired = 0;
+        foreach ($projects as $project) {
+            if ($project->current_deployment_id === null || $project->isDeleting()) {
+                continue;
+            }
+            $before = $this->attachments($project);
+            $this->prepare($project);
+            $repaired += $this->attachments($project) !== $before ? 1 : 0;
+        }
+
+        return $repaired;
+    }
+
+    private function attachments(Project $project): string
+    {
+        $names = [];
+        foreach (['caddy_container', 'worker_container', 'apps_db_container'] as $key) {
+            $container = (string) config('privatecloud.docker.'.$key);
+            $networks = $container !== '' && $this->docker->inspectContainer($container) !== null ? $this->docker->containerNetworks($container) : [];
+            $names[] = $key.':'.(in_array($project->networkName(), $networks, true) ? '1' : '0');
+        }
+
+        return implode(',', $names);
+    }
+
+    public function attachDatabase(Project $project): void
+    {
+        $network = $project->networkName();
+        $this->docker->ensureNetwork($network, $this->instance->labels($project));
+        $this->attach($network, (string) config('privatecloud.docker.apps_db_container'), [(string) config('privatecloud.apps_db.app_host_alias')]);
+    }
+
+    public function detachDatabase(Project $project): void
+    {
+        try {
+            $this->docker->disconnectNetwork($project->networkName(), (string) config('privatecloud.docker.apps_db_container'));
+        } catch (DockerException $e) {
+            Log::warning('Could not detach database from project network', ['project' => $project->slug, 'error' => $e->getMessage()]);
+        }
+    }
+
+    public function remove(Project $project): void
+    {
+        $network = $project->networkName();
+        foreach (['caddy_container', 'worker_container', 'apps_db_container'] as $key) {
+            try {
+                $this->docker->disconnectNetwork($network, (string) config('privatecloud.docker.'.$key));
+            } catch (DockerException) {
+                // not connected
+            }
+        }
+        $this->docker->removeNetwork($network);
+    }
+
+    /** @param list<string> $aliases */
+    private function attach(string $network, string $container, array $aliases = []): void
+    {
+        if ($container === '' || $this->docker->inspectContainer($container) === null) {
+            return; // component not running as a container (e.g. local development)
+        }
+        if (in_array($network, $this->docker->containerNetworks($container), true)) {
+            return;
+        }
+        $this->docker->connectNetwork($network, $container, $aliases);
+    }
+}

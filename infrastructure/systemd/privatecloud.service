@@ -1,0 +1,20 @@
+# Installed by scripts/install.sh (__ROOT__ is replaced with the install path).
+# Containers also restart on their own (restart: unless-stopped); this unit makes
+# sure the whole stack is brought up after a reboot and can be managed with
+# systemctl start|stop|restart privatecloud.
+[Unit]
+Description=PrivateCloud control plane
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__ROOT__
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose stop
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
