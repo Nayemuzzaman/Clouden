@@ -335,7 +335,8 @@ backend/                 Laravel API (app/Services holds the engine)
 frontend/                React dashboard (src/pages, src/components, src/hooks)
 docker/app/              Control-plane image (Dockerfile, entrypoint, FrankenPHP config)
 infrastructure/          Edge Caddyfile, systemd unit
-scripts/                 install, validate-install, update, backup-platform, dev-setup
+scripts/                 install, validate-install, update, backup-platform, dev-setup;
+                         acceptance/ (real GitHub + server test tools)
 examples/simple-node-app Example application with a Dockerfile and /health endpoint
 docs/                    Architecture, deployment, security, backups, GitHub,
                          troubleshooting, development, first server test, CI/CD
@@ -356,6 +357,7 @@ docker-compose.yml       Production stack · docker-compose.dev.yml: local devel
 | [Troubleshooting](docs/troubleshooting.md) | Sign-in, DNS/HTTPS, failed deployments by stage, queues, disk, memory |
 | [Development](docs/development.md) | Local stack, tests, end-to-end and production-mode testing |
 | [First server test](docs/first-server-test.md) | Ordered validation procedure for a fresh Vultr server |
+| [GitHub acceptance test](docs/github-acceptance-test.md) | Real github.com + Vultr test of production branch → live, with the tools in `scripts/acceptance/` |
 | [CI/CD](docs/ci-cd.md) | What CI checks on every pull request; deploying updates to your server |
 
 The same guides are published in the [project wiki](https://github.com/Nayemuzzaman/Clouden/wiki).

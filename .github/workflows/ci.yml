@@ -111,7 +111,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: ShellCheck
-        run: shellcheck -S warning scripts/*.sh docker/app/entrypoint.sh .github/ci/*.sh
+        run: shellcheck -S warning scripts/*.sh scripts/acceptance/*.sh docker/app/entrypoint.sh .github/ci/*.sh
       - name: Installer guard rails (Ubuntu 24.04 container)
         run: docker run --rm -v "$PWD:/src:ro" ubuntu:24.04 bash /src/.github/ci/installer-guards.sh
       - name: Compose files are valid

@@ -135,6 +135,9 @@ curl -sI -H 'Origin: https://evil.example' https://pc-test.example.net/api/v1/au
 
 ## 10. Auto deploy: `main` → live with real github.com
 
+> The complete ordered test, with a test app, an external request loop and port, certificate
+> and redirect checks, is [github-acceptance-test.md](github-acceptance-test.md).
+
 These are the steps the local end-to-end test ([`.github/ci/github-flow-test.sh`](../.github/ci/github-flow-test.sh))
 covers against a **simulated** GitHub; here they run against github.com. Keep the request
 loop from step 8 running and note any non-200.
