@@ -71,7 +71,7 @@ site() { curl -sk --max-time 10 --resolve "$1:8443:127.0.0.1" "https://$1:8443${
 
 # The developer's machine: real git working copies pushing to the simulated GitHub.
 dev_git() { git -C "$WORK/dev/$1" -c user.name="E2E Developer" -c user.email="dev@privatecloud-e2e.dev" "${@:2}"; }
-write_app() { # repo version mode(ok|broken|unhealthy)
+write_app() { # repo version mode(ok|broken|unhealthy|slow)
   local dir="$WORK/dev/$1" version="$2" mode="${3:-ok}"
   mkdir -p "$dir/site"
   printf 'version %s\n' "$version" > "$dir/site/index.html"
@@ -89,6 +89,7 @@ SH
   echo 'exec httpd -f -p "${PORT:-3000}" -h /www' >> "$dir/start.sh"
   { echo 'FROM busybox:1.36'
     [[ "$mode" == broken ]] && echo 'RUN echo "simulated build error" && false'
+    [[ "$mode" == slow ]] && echo "RUN echo 'slow build step for $version' && sleep 30"
     echo 'COPY site/ /www/'
     echo 'COPY start.sh /start.sh'
     echo 'CMD ["sh", "/start.sh"]'; } > "$dir/Dockerfile"
@@ -526,12 +527,16 @@ sleep 5
 s1="$(commit private-app S1 "Version S1")"; push private-app
 check "worker restarted: GitHub link intact, next push deploys" test "$(wait_sha "$PRIVATE" "$s1")" = success
 
-s2="$(commit private-app S2 "Version S2")"; push private-app
+# S2 has a 30 s build step, so the worker is killed while it is really building.
+s2="$(commit private-app S2 "Version S2" slow)"; push private-app
+st=""
 for _ in $(seq 1 120); do
-  st="$(deployments_json "$PRIVATE" | json "[x['status'] for x in d['data'] if x['commit']['sha']=='$s2'][:1]")"
-  [[ "$st" == *building* || "$st" == *cloning* ]] && break
+  st="$(deployments_json "$PRIVATE" | json "''.join(x['status'] for x in d['data'] if x['commit']['sha']=='$s2')")"
+  [[ "$st" == building ]] && break
   sleep 0.5
 done
+check "worker killed mid-deployment: caught S2 while building ($st)" test "$st" = building
+sleep 3
 docker kill privatecloud-worker >/dev/null; docker start privatecloud-worker >/dev/null
 check "worker killed mid-deployment: marked failed" test "$(wait_sha "$PRIVATE" "$s2" 120)" = failed
 check "worker killed mid-deployment: S1 still live" test "$(site private-app.privatecloud-e2e.dev)" = "version S1"
