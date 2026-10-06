@@ -73,6 +73,7 @@ class ProjectService
             ]);
 
             if ($project->source_type !== Project::SOURCE_IMAGE) {
+                $commit = $check['commit'] ?? null; // only GitHub sources are verified up front
                 $project->repository()->create([
                     'provider' => $project->source_type,
                     'full_name' => $data['repository'] ?? null,
@@ -81,12 +82,12 @@ class ProjectService
                         : $data['repository_url'],
                     'branch' => $data['branch'] ?? 'main',
                     'visibility' => $check['visibility'] ?? null,
-                    'latest_commit_sha' => $check['commit']?->sha,
-                    'latest_commit_message' => $check['commit']?->title(),
-                    'latest_commit_author' => $check['commit']?->author,
-                    'latest_commit_at' => $check['commit']?->committedAt,
-                    'last_checked_at' => $check['commit'] ? now() : null,
-                    'access_status' => $check['commit'] ? Repository::ACCESS_OK : null,
+                    'latest_commit_sha' => $commit?->sha,
+                    'latest_commit_message' => $commit?->title(),
+                    'latest_commit_author' => $commit?->author,
+                    'latest_commit_at' => $commit?->committedAt,
+                    'last_checked_at' => $commit ? now() : null,
+                    'access_status' => $commit ? Repository::ACCESS_OK : null,
                 ]);
             }
 

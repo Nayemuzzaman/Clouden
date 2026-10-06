@@ -9,6 +9,7 @@ use App\Jobs\RunDeployment;
 use App\Models\Deployment;
 use App\Models\Domain;
 use App\Models\Project;
+use App\Services\Process\CommandResult;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
@@ -126,6 +127,20 @@ class ProjectTest extends TestCase
             ->assertCreated()
             ->assertJsonPath('data.repository.visibility', 'public')
             ->assertJsonPath('data.repository.latest_commit.sha', str_repeat('c', 40))
+            ->assertJsonPath('data.sync.state', 'out_of_sync');
+    }
+
+    public function test_create_git_url_project_reads_the_branch_head_with_git(): void
+    {
+        $this->actingAsAdmin();
+        config(['privatecloud.deploy.allow_insecure_git' => false]);
+        $this->runner->onBinary('git', fn (array $cmd) => new CommandResult(0, str_repeat('e', 40)."\trefs/heads/main\n", ''));
+
+        $this->postJson('/api/v1/projects', [
+            'name' => 'Docs', 'source_type' => 'git', 'repository_url' => 'https://github.com/acme/docs.git', 'branch' => 'main',
+        ])->assertCreated()
+            ->assertJsonPath('data.repository.provider', 'git')
+            ->assertJsonPath('data.repository.latest_commit.sha', str_repeat('e', 40))
             ->assertJsonPath('data.sync.state', 'out_of_sync');
     }
 
