@@ -46,6 +46,7 @@ E2E_DEVELOPER_PASSWORD="dev-$(openssl rand -hex 12)"
 export E2E_DEVELOPER_PASSWORD
 TOKEN="github_pat_11E2E$(openssl rand -hex 24)"          # the fine-grained token PrivateCloud uses
 APP_SECRET="app-secret-$(openssl rand -hex 12)"          # an application secret variable
+RUN_ID="$(openssl rand -hex 6)"                          # makes build steps unique to this run (no build-cache hits)
 RESULTS="$WORK/results"
 : > "$RESULTS"
 
@@ -89,7 +90,7 @@ SH
   echo 'exec httpd -f -p "${PORT:-3000}" -h /www' >> "$dir/start.sh"
   { echo 'FROM busybox:1.36'
     [[ "$mode" == broken ]] && echo 'RUN echo "simulated build error" && false'
-    [[ "$mode" == slow ]] && echo "RUN echo 'slow build step for $version' && sleep 30"
+    [[ "$mode" == slow ]] && echo "RUN echo 'slow build step for $version (run $RUN_ID)' && sleep 30"
     echo 'COPY site/ /www/'
     echo 'COPY start.sh /start.sh'
     echo 'CMD ["sh", "/start.sh"]'; } > "$dir/Dockerfile"
