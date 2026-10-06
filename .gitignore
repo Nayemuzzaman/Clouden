@@ -1,8 +1,24 @@
 # Local configuration and data
 /.env
+/.env.*
+!/.env.example
 /.data/
 *.log
 .DS_Store
+
+# Secrets, certificates and database dumps
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.sql
+*.sql.gz
+*.dump
+
+# Python bytecode (.github/ci/fake-github)
+__pycache__/
+*.pyc
 
 # Editor
 .idea/
