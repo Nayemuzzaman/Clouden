@@ -121,7 +121,10 @@ jobs:
           docker compose -f docker-compose.yml config -q
           docker compose -f docker-compose.yml -f docker-compose.dev.yml config -q
           docker compose -f docker-compose.yml -f .github/ci/compose.smoke.yml config -q
+          E2E_DEVELOPER_PASSWORD=ci docker compose -f docker-compose.yml -f .github/ci/compose.github-e2e.yml config -q
           rm .env
+      - name: GitHub simulation server compiles
+        run: python3 -m py_compile .github/ci/fake-github/server.py .github/ci/fake-github/post_receive.py
 
   smoke:
     name: Production-mode smoke test (real Docker)
@@ -163,3 +166,33 @@ jobs:
           docker compose -p pcsmoke -f docker-compose.yml -f .github/ci/compose.smoke.yml down -v --remove-orphans || true
           docker ps -aq --filter label=privatecloud.managed=true | xargs -r docker rm -f || true
           rm -f .env
+
+  github-flow:
+    name: GitHub production branch → live (real Docker, simulated GitHub)
+    needs: [backend, frontend, scripts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the control-plane image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/app/Dockerfile
+          tags: privatecloud/app:local
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: End-to-end test (git push → webhook → build → health check → Caddy → live)
+        run: .github/ci/github-flow-test.sh
+
+      - name: Service logs
+        if: failure()
+        run: |
+          for c in privatecloud-app privatecloud-worker privatecloud-caddy privatecloud-e2e-github; do
+            echo "::group::$c"; docker logs --tail 200 "$c" 2>&1 || true; echo "::endgroup::"
+          done

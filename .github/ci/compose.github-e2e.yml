@@ -1,0 +1,31 @@
+# End-to-end test of "production branch → live" (.github/ci/github-flow-test.sh):
+# the production stack exactly as on a server, plus a local GitHub simulation
+# (.github/ci/fake-github, NOT github.com).
+#
+# - Caddy issues every certificate from its internal CA (local_certs), so no
+#   request ever goes to Let's Encrypt; the dashboard answers on
+#   cloud.privatecloud-e2e.dev (the webhook address) and localhost.
+# - Ports are bound to the loopback interface only.
+services:
+  caddy:
+    environment:
+      PC_DASHBOARD_ADDRESS: "cloud.privatecloud-e2e.dev, localhost"
+      PC_CADDY_ACME_EMAIL_OPTION: local_certs
+    ports: !override
+      - "127.0.0.1:8443:443"
+      - "127.0.0.1:8081:80"
+    networks:
+      platform:
+        aliases: [cloud.privatecloud-e2e.dev]
+
+  fake-github:
+    image: privatecloud/fake-github:e2e
+    container_name: privatecloud-e2e-github
+    environment:
+      CODELOAD_HOST: codeload-fake:8080
+      DEVELOPER_PASSWORD: ${E2E_DEVELOPER_PASSWORD:?E2E_DEVELOPER_PASSWORD must be set}
+    ports: ["127.0.0.1:18080:8080"]
+    restart: unless-stopped
+    networks:
+      platform:
+        aliases: [fake-github, codeload-fake]

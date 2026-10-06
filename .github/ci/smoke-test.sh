@@ -183,7 +183,8 @@ log_body="$(api GET "/projects/smoke/deployments/$id/logs")"
 ok "secret value never returned by the API"
 
 step "Worker killed during a deployment"
-id2="$(api POST /projects/smoke/deployments | json "d['data']['id']")"
+# Same commit again: "Deploy Latest" would answer 409 up_to_date, so rebuild on purpose.
+id2="$(api POST /projects/smoke/deployments '{"force":true}' | json "d['data']['id']")"
 for _ in $(seq 1 120); do
   s="$(deployment_status "$id2")"
   [[ "$s" == cloning || "$s" == building ]] && break
@@ -196,7 +197,7 @@ result="$(wait_for_deployment "$id2" 120)"
 [[ "$(api GET "/projects/smoke/deployments/$id2")" == *interrupted* ]] || die "no 'interrupted' failure reason"
 docker exec privatecloud-worker php -r "exit(@file_get_contents('http://$container:3000/health') === false ? 1 : 0);" || die "live version stopped answering"
 ok "marked interrupted; the live version kept answering"
-id3="$(api POST /projects/smoke/deployments | json "d['data']['id']")"
+id3="$(api POST /projects/smoke/deployments '{"force":true}' | json "d['data']['id']")"
 result="$(wait_for_deployment "$id3" 600)"
 [[ "$result" == success ]] || die "deployment after recovery finished as $result"
 ok "the next deployment succeeded (project lock released)"
