@@ -11,6 +11,7 @@ use App\Models\Project;
 use App\Services\Deployment\NetworkManager;
 use App\Services\Docker\DockerClient;
 use App\Services\Notifier;
+use App\Services\Projects\ProductionReconciler;
 use Illuminate\Console\Command;
 use Throwable;
 
@@ -18,7 +19,10 @@ use Throwable;
  * Brings recorded state back in line with reality:
  *  - deployments/backups stuck in an active state (worker died) are marked failed;
  *  - projects whose live container stopped unexpectedly are marked crashed (and back);
- *  - platform containers that were recreated are re-attached to project networks.
+ *  - platform containers that were recreated are re-attached to project networks;
+ *  - a Caddy route that does not point at the recorded production container is
+ *    re-rendered from the database (see ProductionReconciler; never while the
+ *    project is deploying).
  */
 class Reconcile extends Command
 {
@@ -26,7 +30,7 @@ class Reconcile extends Command
 
     protected $description = 'Detect stale jobs and crashed applications';
 
-    public function handle(DockerClient $docker, Notifier $notifier, NetworkManager $networks): int
+    public function handle(DockerClient $docker, Notifier $notifier, NetworkManager $networks, ProductionReconciler $production): int
     {
         $staleAfter = (int) config('privatecloud.deploy.stale_after_seconds');
 
@@ -57,6 +61,17 @@ class Reconcile extends Command
             }
         } catch (Throwable $e) {
             report($e);
+        }
+
+        foreach (Project::query()->whereNull('deleting_at')->whereNotNull('current_deployment_id')->whereHas('domains')->get() as $project) {
+            try {
+                if ($production->repairRouting($project)) {
+                    $this->warn("Routing of {$project->slug} did not match the recorded production deployment and was re-synced.");
+                    $notifier->notify('routing.repaired', "{$project->name}: routing repaired", 'Traffic was not routed to the recorded production version and has been switched back to it.', 'warning', "/projects/{$project->slug}");
+                }
+            } catch (Throwable $e) {
+                report($e);
+            }
         }
 
         $projects = Project::query()->with('currentDeployment')->whereNull('deleting_at')
