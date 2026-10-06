@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useOutletContext } from 'react-router'
 import { toast } from 'sonner'
-import { api, errorMessage } from '../lib/api'
+import { api, ApiError, errorMessage } from '../lib/api'
 import type { Deployment, Project } from '../lib/types'
 
 export function useProjectQuery(slug: string | undefined) {
@@ -32,21 +32,39 @@ export function useInvalidateProject(slug: string) {
   }
 }
 
-/** Start a deployment (latest commit, redeploy, or rollback) and open its progress page. */
+export type DeployRequest =
+  | { type: 'latest'; force?: boolean }
+  | { type: 'commit'; sha: string }
+  | { type: 'redeploy' }
+  | { type: 'rollback'; deploymentId: number }
+
+/** Production already runs the head of the branch ("Deploy Latest" answered 409 up_to_date). */
+export function isUpToDate(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === 'up_to_date'
+}
+
+/**
+ * Start a deployment and open its progress page. "latest" deploys the current
+ * head of the production branch, "commit" an exact commit again (Retry),
+ * "redeploy" restarts the live version with current settings.
+ */
 export function useDeploy(slug: string) {
   const navigate = useNavigate()
   const invalidate = useInvalidateProject(slug)
   return useMutation({
-    mutationFn: (kind: { type: 'latest' } | { type: 'redeploy' } | { type: 'rollback'; deploymentId: number }) => {
-      const path =
-        kind.type === 'latest' ? `/projects/${slug}/deployments` : kind.type === 'redeploy' ? `/projects/${slug}/redeploy` : `/projects/${slug}/deployments/${kind.deploymentId}/rollback`
-      return api<{ data: Deployment }>(path, { method: 'POST' })
+    mutationFn: (kind: DeployRequest) => {
+      const path = kind.type === 'redeploy' ? `/projects/${slug}/redeploy` : kind.type === 'rollback' ? `/projects/${slug}/deployments/${kind.deploymentId}/rollback` : `/projects/${slug}/deployments`
+      const body = kind.type === 'latest' && kind.force ? { force: true } : kind.type === 'commit' ? { commit_sha: kind.sha } : undefined
+      return api<{ data: Deployment; meta?: { reused?: boolean; message?: string | null } }>(path, { method: 'POST', body })
     },
     onSuccess: (r) => {
       invalidate()
-      toast.success(`Deployment #${r.data.number} queued`)
+      if (r.meta?.reused) toast.info(r.meta.message ?? `Deployment #${r.data.number} is already in progress`)
+      else toast.success(`Deployment #${r.data.number} queued${r.data.commit ? ` (${r.data.commit.short_sha})` : ''}`)
       navigate(`/projects/${slug}/deployments/${r.data.id}`)
     },
-    onError: (e) => toast.error(errorMessage(e)),
+    onError: (e) => {
+      if (!isUpToDate(e)) toast.error(errorMessage(e))
+    },
   })
 }

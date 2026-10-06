@@ -85,6 +85,7 @@ export default function NewProject() {
     retry: false,
   })
 
+  const typedRepo = /^[\w.-]+\/[\w.-]+$/.test(repoFilter.trim()) && !(repos.data?.data ?? []).some((r) => r.full_name.toLowerCase() === repoFilter.trim().toLowerCase())
   const filteredRepos = useMemo(() => (repos.data?.data ?? []).filter((r) => r.full_name.toLowerCase().includes(repoFilter.toLowerCase())).slice(0, 50), [repos.data, repoFilter])
 
   const suggestName = (value: string) => {
@@ -194,8 +195,14 @@ export default function NewProject() {
                               {r.private && <span className="muted text-xs">Private</span>}
                             </button>
                           ))}
-                          {repos.data && filteredRepos.length === 0 && <p className="muted p-3 text-sm">No repositories match.</p>}
+                          {repos.data && filteredRepos.length === 0 && !typedRepo && <p className="muted p-3 text-sm">No repositories match. Type owner/repository to use a public repository.</p>}
+                          {typedRepo && (
+                            <button type="button" onClick={() => { setRepository(repoFilter.trim()); suggestName(repoFilter) }} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800">
+                              Use <span className="mono font-medium">{repoFilter.trim()}</span>
+                            </button>
+                          )}
                         </div>
+                        {repository && <p className="muted text-xs">Selected: <span className="font-medium text-zinc-700 dark:text-zinc-200">{repository}</span>{branches.data ? ` · ${branches.data.private ? 'Private' : 'Public'}` : ''}</p>}
                       </div>
                     )}
                   </Field>
@@ -204,7 +211,7 @@ export default function NewProject() {
                     {(id) => <Input id={id} placeholder="username/repository" value={repository} onChange={(e) => { setRepository(e.target.value.trim()); suggestName(e.target.value) }} invalid={!!err('repository')} />}
                   </Field>
                 )}
-                <Field label="Branch" error={err('branch') ?? (branches.error ? errorMessage(branches.error) : undefined)}>
+                <Field label="Production branch" help="This branch is deployed to production. With auto deploy, every push to it goes live after a successful build and health check." error={err('branch') ?? (branches.error ? errorMessage(branches.error) : undefined)}>
                   {(id) =>
                     branches.data ? (
                       <Select id={id} value={branch} onChange={(e) => setBranch(e.target.value)}>

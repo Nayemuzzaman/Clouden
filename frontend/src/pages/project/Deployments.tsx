@@ -11,6 +11,7 @@ import { Card } from '../../components/ui/Card'
 import { ConfirmDialog } from '../../components/ui/Dialog'
 import { EmptyState, ErrorState, LoadingBlock } from '../../components/ui/Feedback'
 import { Badge, DeploymentStatusBadge } from '../../components/ui/Status'
+import { triggerLabel } from '../../lib/production'
 
 export default function Deployments() {
   const project = useProject()
@@ -46,14 +47,13 @@ export default function Deployments() {
                   <span className="truncate font-medium">{d.commit?.message ?? (d.type === 'deploy' ? 'Deployment' : d.type)}</span>
                 </Link>
                 <p className="muted mt-0.5 truncate text-xs">
-                  {d.type === 'rollback' ? `Rollback to #${d.rollback_of?.number} · ` : d.type === 'redeploy' ? 'Redeploy with current settings · ' : ''}
-                  {d.branch && `${d.branch} · `}{d.initiated_by ?? 'system'} · {timeAgo(d.created_at)}
+                  {triggerLabel(d)} · {d.branch && `${d.branch} · `}{d.initiated_by ?? 'system'} · {timeAgo(d.created_at)}
                   {d.duration_seconds !== null && ` · ${formatDuration(d.duration_seconds)}`}
                 </p>
-                {d.status === 'failed' && d.failure && <p className="mt-1 truncate text-xs text-red-600 dark:text-red-400">{d.failure.reason}</p>}
+                {(d.status === 'failed' || d.status === 'superseded') && d.failure && <p className={`mt-1 truncate text-xs ${d.status === 'failed' ? 'text-red-600 dark:text-red-400' : 'muted'}`}>{d.failure.reason}</p>}
               </div>
               <div className="flex items-center gap-2">
-                {d.is_production && <Badge tone="green">Production</Badge>}
+                {d.is_production && <Badge tone="green">Live</Badge>}
                 <DeploymentStatusBadge status={d.status} />
                 {d.status === 'success' && !d.is_production && d.image_available && (
                   <Button size="sm" icon={<Undo2 className="size-3.5" />} onClick={() => setRollbackTarget(d)}>Rollback</Button>
