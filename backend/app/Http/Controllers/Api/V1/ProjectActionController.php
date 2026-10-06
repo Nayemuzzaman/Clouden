@@ -9,8 +9,10 @@ use App\Models\WebhookEvent;
 use App\Services\Deployment\FrameworkDetector;
 use App\Services\Monitoring\ContainerStats;
 use App\Services\Projects\AutoDeployService;
+use App\Services\Projects\ProductionReconciler;
 use App\Services\Projects\ProjectRuntime;
 use App\Services\Projects\ProjectService;
+use App\Services\Projects\SyncStatus;
 use App\Services\Source\GitHubClient;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -77,7 +79,7 @@ class ProjectActionController extends Controller
         $projects->refreshCommit($project);
         $repository = $project->repository->fresh();
 
-        return response()->json(['latest_commit' => [
+        return response()->json(['sync' => SyncStatus::for($project->fresh(['repository', 'currentDeployment', 'latestDeployment'])), 'latest_commit' => [
             'sha' => $repository->latest_commit_sha,
             'short_sha' => substr((string) $repository->latest_commit_sha, 0, 7),
             'message' => $repository->latest_commit_message,
@@ -100,31 +102,57 @@ class ProjectActionController extends Controller
     public function autoDeploy(Request $request, Project $project, AutoDeployService $autoDeploy): JsonResponse
     {
         $request->validate(['enabled' => ['required', 'boolean']]);
-        if ($request->boolean('enabled')) {
-            $result = $autoDeploy->enable($project);
-        } else {
-            $autoDeploy->disable($project);
-            $result = ['automatic' => false, 'error' => null];
-        }
+        $message = $request->boolean('enabled')
+            ? $autoDeploy->enable($project)['error']
+            : $autoDeploy->disable($project);
 
         return response()->json([
             'auto_deploy' => $project->fresh()->auto_deploy,
             'webhook_url' => $autoDeploy->webhookUrl($project),
             'webhook_installed' => (bool) $project->repository?->fresh()?->webhook_id,
-            'message' => $result['error'],
+            'message' => $message,
         ]);
     }
 
     public function webhook(Project $project, AutoDeployService $autoDeploy): JsonResponse
     {
+        $repository = $project->repository;
+
         return response()->json([
             'url' => $autoDeploy->webhookUrl($project),
             'content_type' => 'application/json',
             'events' => ['push'],
-            'installed' => (bool) $project->repository?->webhook_id,
+            'installed' => (bool) $repository?->webhook_id,
+            'status' => $repository?->webhook_status,
+            'error' => $repository?->webhook_error,
+            'last_delivery_at' => $repository?->webhook_last_delivery_at?->toIso8601String(),
             'recent_events' => WebhookEvent::query()->where('project_id', $project->id)->latest('id')->limit(10)
-                ->get(['delivery_id', 'event', 'ref', 'commit_sha', 'status', 'reason', 'created_at']),
+                ->get(['delivery_id', 'event', 'repository', 'ref', 'commit_sha', 'status', 'reason', 'deployment_id', 'created_at']),
         ]);
+    }
+
+    /** Re-check the GitHub webhook (and re-create it if it was deleted in GitHub). */
+    public function checkWebhook(Project $project, AutoDeployService $autoDeploy): JsonResponse
+    {
+        if (! $project->auto_deploy) {
+            return response()->json(['message' => 'Auto deploy is off for this project.'], 422);
+        }
+        $result = $autoDeploy->ensureWebhook($project);
+        $repository = $project->repository?->fresh();
+
+        return response()->json([
+            'installed' => (bool) $repository?->webhook_id,
+            'status' => $repository?->webhook_status,
+            'message' => $result['error'] ?? 'The GitHub webhook is installed and points at this server.',
+        ], $result['error'] ? 422 : 200);
+    }
+
+    /** What is live, what the branch head is, and any mismatch with Docker and routing. */
+    public function production(Project $project, ProductionReconciler $reconciler): JsonResponse
+    {
+        $project->load(['repository', 'currentDeployment', 'latestDeployment', 'domains']);
+
+        return response()->json([...$reconciler->inspect($project), 'sync' => SyncStatus::for($project)]);
     }
 
     public function revealWebhookSecret(Project $project): JsonResponse

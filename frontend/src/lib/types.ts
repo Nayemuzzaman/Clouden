@@ -1,9 +1,28 @@
 // Shapes of the PrivateCloud API responses (see backend/app/Http/Resources).
 
 export type ProjectStatus = 'created' | 'deploying' | 'running' | 'stopped' | 'crashed' | 'failed' | 'deleting'
-export type DeploymentStatus = 'queued' | 'cloning' | 'building' | 'starting' | 'health_checking' | 'routing' | 'success' | 'failed' | 'cancelled'
+export type DeploymentStatus = 'queued' | 'cloning' | 'building' | 'starting' | 'health_checking' | 'routing' | 'success' | 'failed' | 'cancelled' | 'superseded'
 export type JobStatus = 'queued' | 'running' | 'success' | 'failed'
 export type SourceType = 'github' | 'git' | 'image'
+export type Visibility = 'public' | 'private'
+export type SyncState = 'synced' | 'out_of_sync' | 'deploying' | 'failed' | 'unknown'
+export type AccessStatus = 'ok' | 'auth_failed' | 'no_access' | 'no_contents_permission' | 'branch_missing' | 'rate_limited' | 'unreachable'
+
+/** How production relates to the head of the production branch (backend: SyncStatus). */
+export interface SyncStatus {
+  state: SyncState
+  message: string
+  branch: string
+  desired: (Commit & { committed_at: string | null }) | null
+  production: { deployment_id: number; number: number; sha: string | null; short_sha: string | null; message: string | null; branch: string | null; deployed_at: string | null } | null
+  deploying: { deployment_id: number; number: number; sha: string | null; short_sha: string | null; status: DeploymentStatus } | null
+  failed: { deployment_id: number; number: number; sha: string | null; short_sha: string | null; stage: string | null; reason: string | null; finished_at: string | null } | null
+  rolled_back: boolean
+  rolled_back_at: string | null
+  attention: AccessStatus | null
+  attention_message: string | null
+  checked_at: string | null
+}
 
 export interface User {
   id: number
@@ -31,6 +50,7 @@ export interface Deployment {
   is_active: boolean
   is_production: boolean
   branch: string | null
+  source?: { type: SourceType | null; repository: string | null; visibility: Visibility | null; webhook_delivery_id: string | null }
   commit: Commit | null
   image_tag: string | null
   image_id: string | null
@@ -122,10 +142,17 @@ export interface Project {
     url: string
     branch: string
     latest_commit: Commit | null
+    visibility: Visibility | null
     last_checked_at: string | null
     last_check_error: string | null
+    access_status: AccessStatus | null
     webhook_installed: boolean
+    webhook_status: 'active' | 'failed' | 'manual' | 'orphaned' | null
+    webhook_error: string | null
+    webhook_last_delivery_at: string | null
   } | null
+  sync: SyncStatus | null
+  rolled_back_at: string | null
   primary_domain: string | null
   domains?: Domain[]
   current_deployment?: Deployment | null

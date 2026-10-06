@@ -9,6 +9,8 @@ use Illuminate\Database\Eloquent\Model;
  * @property string $delivery_id
  * @property string $event
  * @property string|null $ref
+ * @property string|null $repository
+ * @property string|null $before_sha
  * @property string|null $commit_sha
  * @property string $status
  * @property string|null $reason
@@ -17,5 +19,5 @@ class WebhookEvent extends Model
 {
     public const UPDATED_AT = null;
 
-    protected $fillable = ['project_id', 'provider', 'delivery_id', 'payload_sha256', 'event', 'ref', 'commit_sha', 'status', 'reason', 'deployment_id'];
+    protected $fillable = ['project_id', 'provider', 'delivery_id', 'payload_sha256', 'event', 'repository', 'ref', 'before_sha', 'commit_sha', 'status', 'reason', 'deployment_id'];
 }

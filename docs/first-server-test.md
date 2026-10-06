@@ -133,15 +133,41 @@ curl -sI -H 'Origin: https://evil.example' https://pc-test.example.net/api/v1/au
 4. *Deployments → Rollback* to an earlier successful deployment → Successful; then deploy
    latest again.
 
-## 10. Auto deploy and webhooks
+## 10. Auto deploy: `main` → live with real github.com
 
-1. *Settings → Auto deploy* on → the webhook appears in the GitHub repository; its *ping*
-   delivery returns 200 ("Webhook connected").
-2. Push a commit → a deployment starts automatically and succeeds.
-3. GitHub → webhook → *Recent deliveries* → *Redeliver* the push → response says
-   `duplicate`; no second deployment.
-4. Change the secret on GitHub to something else and push → delivery gets 401, nothing
-   deploys. Restore the secret (*Rotate* in PrivateCloud and update GitHub).
+> The complete ordered test, with a test app, an external request loop and port, certificate
+> and redirect checks, is [github-acceptance-test.md](github-acceptance-test.md).
+
+These are the steps the local end-to-end test ([`.github/ci/github-flow-test.sh`](../.github/ci/github-flow-test.sh))
+covers against a **simulated** GitHub; here they run against github.com. Keep the request
+loop from step 8 running and note any non-200.
+
+1. *Settings → Auto deploy* on → the webhook appears in the GitHub repository (*Settings →
+   Webhooks*) pointing at `https://<dashboard>/api/v1/webhooks/github/…`; its *ping*
+   delivery returns 200 and the project shows *Webhook: Connected*.
+2. `git push origin main` with a visible change → a deployment starts within seconds
+   (trigger *Webhook (git push)*), the commit SHA on the deployment equals the pushed
+   commit, it succeeds, the status shows **Synced**, the loop shows no errors.
+3. Push a broken commit (e.g. `RUN false` in the Dockerfile) → **Deployment failed**, the
+   previous version still answers, the project says the latest commit failed and which
+   version is still running.
+4. Push a fix → it goes live.
+5. *Deployments → Rollback* to an earlier version → that version answers; the project shows
+   **Rolled back · out of sync**; GitHub → webhook → *Recent deliveries* → *Redeliver* the
+   last push → response `ignored` (rolled back), nothing deploys.
+6. Push a new commit → auto deploy resumes and it goes live.
+7. Push to another branch and push a tag → deliveries answered `ignored`, nothing deploys.
+8. *Redeliver* the last push again → `duplicate`; no second deployment.
+9. Push three commits in quick succession (three `git push`es) → production ends on the
+   last one; intermediate waiting deployments show *Superseded*.
+10. Change the webhook secret on GitHub and push → delivery gets 401, nothing deploys, the
+    audit log shows `webhook.rejected`. Restore it (*Rotate* in PrivateCloud and *Check
+    webhook*).
+11. Repeat 2–4 with a **public** repository and no token connected (or check in the
+    GitHub token's settings that it was not used for the public repository's code).
+12. Delete the webhook in GitHub → *Project → Settings → Check webhook* re-creates it.
+13. Make the private test repository public and back → deployments keep working; the
+    project shows the visibility after *Check for new commits*.
 
 ## 11. Database, backups, restore
 
@@ -176,9 +202,13 @@ curl -sI -H 'Origin: https://evil.example' https://pc-test.example.net/api/v1/au
 
 ## 14. Token failure
 
-Revoke the GitHub token on GitHub → *Check for new commits* fails with "GitHub rejected
-the access token"; *Settings → GitHub* shows "GitHub rejected the saved token" and you
-get one notification; the live app keeps running. Create a new token and connect it.
+1. Revoke the GitHub token on GitHub, then push → the deployment fails at *Fetching
+   source*; the project shows *GitHub connection needs attention*; *Settings → GitHub*
+   shows "GitHub rejected the saved token" and you get one notification; the live app
+   keeps running. Create a new token, connect it, *Deploy Latest*.
+2. Create a fine-grained token **without** *Contents: Read* → *Deploy Latest* explains the
+   missing permission. Then one without access to the repository → "can no longer
+   access". Reconnect the correct token.
 
 ## 15. Update procedure
 

@@ -23,11 +23,18 @@ class DeploymentResource extends JsonResource
             'is_active' => $this->status->isActive(),
             'is_production' => $this->project && $this->project->current_deployment_id === $this->id,
             'branch' => $this->branch,
+            'source' => [
+                'type' => $this->project?->source_type,
+                'repository' => $this->repository,
+                'visibility' => $this->source_visibility,
+                'webhook_delivery_id' => $this->webhook_delivery_id,
+            ],
             'commit' => $this->commit_sha ? [
                 'sha' => $this->commit_sha,
                 'short_sha' => $this->shortSha(),
                 'message' => $this->commit_message,
                 'author' => $this->commit_author,
+                'committed_at' => $this->commit_committed_at?->toIso8601String(),
             ] : null,
             'image_tag' => $this->image_tag,
             'image_id' => $this->image_id ? substr($this->image_id, 7, 12) : null,

@@ -122,6 +122,6 @@ class WebhookTest extends TestCase
         $this->send($second, delivery: 'b')->assertStatus(202);
 
         // The first (still queued) deployment is superseded by the newer push.
-        $this->assertSame(['cancelled', 'queued'], Deployment::query()->orderBy('number')->get()->map(fn ($d) => $d->status->value)->all());
+        $this->assertSame(['superseded', 'queued'], Deployment::query()->orderBy('number')->get()->map(fn ($d) => $d->status->value)->all());
     }
 }

@@ -21,7 +21,7 @@ interface SettingsData {
   thresholds: Thresholds
   metrics_retention_days: number
   backup_storage: { driver: string; off_server: boolean }
-  github: { connected: boolean; login?: string; name?: string | null; avatar_url?: string | null; scopes?: string | null; last_verified_at?: string | null; token_rejected_at?: string | null }
+  github: { connected: boolean; login?: string; name?: string | null; avatar_url?: string | null; scopes?: string | null; token_type?: string; last_verified_at?: string | null; token_rejected_at?: string | null; rate_limited_until?: string | null }
 }
 
 function GitHubSettings({ settings }: { settings: SettingsData }) {
@@ -37,6 +37,12 @@ function GitHubSettings({ settings }: { settings: SettingsData }) {
     mutationFn: () => api('/settings/github', { method: 'DELETE' }),
     onSuccess: () => { toast.success('GitHub disconnected'); queryClient.invalidateQueries({ queryKey: ['settings'] }) },
   })
+  const check = useMutation({
+    mutationFn: () => api<{ ok: boolean; message: string }>('/settings/github/check', { method: 'POST' }),
+    onSuccess: (r) => toast.success(r.message),
+    onError: (e) => toast.error(errorMessage(e)),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
+  })
   const gh = settings.github
   return (
     <Card>
@@ -48,8 +54,16 @@ function GitHubSettings({ settings }: { settings: SettingsData }) {
               {gh.avatar_url && <img src={gh.avatar_url} alt="" className="size-9 rounded-full" />}
               <div><p className="font-medium">{gh.name ?? gh.login} <span className="muted font-normal">@{gh.login}</span></p><p className="muted text-xs">Verified {timeAgo(gh.last_verified_at)}{gh.scopes ? ` · scopes: ${gh.scopes}` : ' · fine-grained token'}</p></div>
             </div>
-            <Button variant="outline-danger" size="sm" loading={disconnect.isPending} onClick={() => disconnect.mutate()}>Disconnect</Button>
+            <div className="flex gap-2">
+              <Button size="sm" loading={check.isPending} onClick={() => check.mutate()}>Check connection</Button>
+              <Button variant="outline-danger" size="sm" loading={disconnect.isPending} onClick={() => disconnect.mutate()}>Disconnect</Button>
+            </div>
           </div>
+        )}
+        {gh.connected && gh.rate_limited_until && (
+          <Callout tone="warning" title="GitHub rate limit reached">
+            GitHub asked PrivateCloud to pause API requests until {formatDateTime(gh.rate_limited_until)}. Running applications are not affected; deployments from GitHub resume after that.
+          </Callout>
         )}
         {gh.connected && gh.token_rejected_at && (
           <Callout tone="error" title="GitHub rejected the saved token">
@@ -59,7 +73,7 @@ function GitHubSettings({ settings }: { settings: SettingsData }) {
         {(!gh.connected || gh.token_rejected_at) && (
           <>
             <Callout tone="info" title="Create a fine-grained personal access token">
-              On GitHub: Settings → Developer settings → Personal access tokens → Fine-grained tokens. Give it access to the repositories you deploy with <strong>Contents: Read</strong> and <strong>Metadata: Read</strong>. Add <strong>Webhooks: Read and write</strong> to let PrivateCloud install auto-deploy webhooks.
+              On GitHub: Settings → Developer settings → Personal access tokens → Fine-grained tokens. Select only the repositories you deploy and grant these repository permissions: <strong>Metadata: Read</strong> (always included), <strong>Contents: Read</strong> (download the code of private repositories) and <strong>Webhooks: Read and write</strong> (install the auto-deploy webhook). No other permission is needed. Public repositories deploy without a token.
             </Callout>
             <form className="flex flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); connect.mutate() }}>
               <Input type="password" className="mono max-w-md" placeholder="github_pat_…" value={token} onChange={(e) => setToken(e.target.value.trim())} aria-label="GitHub token" autoComplete="off" invalid={!!error} />

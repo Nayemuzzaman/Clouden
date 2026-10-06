@@ -4,8 +4,8 @@ Two GitHub Actions workflows live in `.github/workflows/`.
 
 ## CI — every pull request and every push to `main`
 
-[`ci.yml`](../.github/workflows/ci.yml) runs four jobs. The first three run in parallel;
-the smoke test runs when they pass.
+[`ci.yml`](../.github/workflows/ci.yml) runs five jobs. The first three run in parallel;
+the smoke test and the GitHub flow test run when they pass.
 
 | Job | What it checks |
 | --- | --- |
@@ -13,6 +13,8 @@ the smoke test runs when they pass.
 | **Frontend** | oxlint, strict TypeScript, Vitest + Testing Library, production build. |
 | **Scripts and installer** | ShellCheck on every script; `scripts/install.sh` guard rails in an Ubuntu 24.04 container ([`.github/ci/installer-guards.sh`](../.github/ci/installer-guards.sh): placeholder domain/email, invalid input, development `.env` refused and left untouched, non-root, unsupported Ubuntu); all compose files validate. |
 | **Production-mode smoke test** | Builds the control-plane image and starts `docker-compose.yml` exactly as on a server (uid 33, all capabilities dropped, configuration guard), with the dashboard on `https://localhost` from Caddy's internal CA so nothing contacts Let's Encrypt ([`.github/ci/smoke-test.sh`](../.github/ci/smoke-test.sh)). |
+
+| **GitHub production branch → live** | The same production stack plus a local GitHub simulation ([`.github/ci/fake-github`](../.github/ci/fake-github)): real git repositories, real `git push`, signed webhooks, real Docker builds and containers, real health checks and Caddy routing ([`.github/ci/github-flow-test.sh`](../.github/ci/github-flow-test.sh)). GitHub itself is simulated; nothing contacts github.com or Let's Encrypt. |
 
 The smoke test verifies, against real Docker:
 
@@ -31,8 +33,26 @@ The smoke test verifies, against real Docker:
 7. the whole control plane is re-created (like a reboot or update): services are healthy
    and the application is reachable again.
 
+The GitHub flow test runs the acceptance flow for a **public** and a **private**
+repository — deploy A, push B, broken C keeps B live, D, roll back to B (not undone by a
+redelivery), push E resumes auto deploy — with a request loop during each switch (zero
+failed requests required), plus: failed health checks leave no container behind,
+database rows and volume contents survive every deployment and the rollback, duplicate
+and forged deliveries, other branches and tags, rapid pushes, Deploy Latest racing a
+webhook, out-of-order deliveries, visibility changes, a deleted production branch,
+revoked or under-privileged tokens, rate limits, the token absent from logs, the
+platform database (plaintext), images, image layers, containers, API responses and build
+logs, recovery after worker restarts, a worker killed mid-deployment and a re-created
+control plane, and finally `privatecloud:production-status`. Run it locally with no
+PrivateCloud stack running:
+
+```bash
+docker build -t privatecloud/app:local -f docker/app/Dockerfile .
+.github/ci/github-flow-test.sh          # E2E_KEEP=1 leaves the stack up for inspection
+```
+
 To require CI before merging: *Settings → Branches → Add branch protection rule* for
-`main` → *Require status checks to pass* → select the four CI jobs.
+`main` → *Require status checks to pass* → select the five CI jobs.
 
 Run the same checks locally:
 

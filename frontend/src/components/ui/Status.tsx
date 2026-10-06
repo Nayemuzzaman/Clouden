@@ -1,5 +1,5 @@
 import { classNames } from '../../lib/format'
-import type { DeploymentStatus, JobStatus, ProjectStatus } from '../../lib/types'
+import type { DeploymentStatus, JobStatus, ProjectStatus, SyncState } from '../../lib/types'
 
 type Tone = 'green' | 'amber' | 'red' | 'gray' | 'blue'
 
@@ -45,11 +45,12 @@ const deploymentStatus: Record<DeploymentStatus, [Tone, string]> = {
   success: ['green', 'Successful'],
   failed: ['red', 'Failed'],
   cancelled: ['gray', 'Cancelled'],
+  superseded: ['gray', 'Superseded'],
 }
 
 export function DeploymentStatusBadge({ status }: { status: DeploymentStatus }) {
   const [tone, label] = deploymentStatus[status] ?? ['gray', status]
-  const active = !['success', 'failed', 'cancelled'].includes(status)
+  const active = !['success', 'failed', 'cancelled', 'superseded'].includes(status)
   return <Badge tone={tone} pulse={active}>{label}</Badge>
 }
 
@@ -58,6 +59,21 @@ const jobStatus: Record<JobStatus, [Tone, string]> = {
   running: ['blue', 'Running'],
   success: ['green', 'Completed'],
   failed: ['red', 'Failed'],
+}
+
+const syncStatus: Record<SyncState, [Tone, string]> = {
+  synced: ['green', 'Synced'],
+  out_of_sync: ['amber', 'Out of sync'],
+  deploying: ['blue', 'Deploying'],
+  failed: ['red', 'Deployment failed'],
+  unknown: ['gray', 'Unknown'],
+}
+
+/** Production vs. the head of the production branch. */
+export function SyncBadge({ state, rolledBack = false, sha }: { state: SyncState; rolledBack?: boolean; sha?: string | null }) {
+  const [tone, label] = syncStatus[state] ?? ['gray', state]
+  const text = state === 'deploying' && sha ? `Deploying ${sha}` : rolledBack && state === 'out_of_sync' ? 'Rolled back · out of sync' : label
+  return <Badge tone={tone} pulse={state === 'deploying'}>{text}</Badge>
 }
 
 export function JobStatusBadge({ status }: { status: JobStatus }) {

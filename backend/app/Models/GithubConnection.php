@@ -11,6 +11,7 @@ use Illuminate\Support\Carbon;
  * @property string|null $account_name
  * @property string|null $avatar_url
  * @property string $token
+ * @property string $token_type
  * @property string|null $scopes
  * @property Carbon|null $last_verified_at
  */

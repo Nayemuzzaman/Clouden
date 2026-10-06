@@ -4,6 +4,7 @@ namespace App\Http\Resources;
 
 use App\Models\Project;
 use App\Models\Repository;
+use App\Services\Projects\SyncStatus;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -55,10 +56,19 @@ class ProjectResource extends JsonResource
                     'author' => $repository->latest_commit_author,
                     'committed_at' => $repository->latest_commit_at?->toIso8601String(),
                 ] : null,
+                'visibility' => $repository->visibility,
                 'last_checked_at' => $repository->last_checked_at?->toIso8601String(),
                 'last_check_error' => $repository->last_check_error,
+                'access_status' => $repository->access_status,
                 'webhook_installed' => $repository->webhook_id !== null,
+                'webhook_status' => $repository->webhook_status,
+                'webhook_error' => $repository->webhook_error,
+                'webhook_last_delivery_at' => $repository->webhook_last_delivery_at?->toIso8601String(),
             ] : null,
+            // How production relates to the head of the production branch (needs the deployment relations).
+            'sync' => $this->relationLoaded('repository') && $this->relationLoaded('currentDeployment') && $this->relationLoaded('latestDeployment')
+                ? SyncStatus::for($this->resource) : null,
+            'rolled_back_at' => $this->rolled_back_at?->toIso8601String(),
             'primary_domain' => $primary?->hostname,
             'domains' => DomainResource::collection($this->whenLoaded('domains')),
             'current_deployment' => new DeploymentResource($this->whenLoaded('currentDeployment')),

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\GithubConnection;
+use App\Models\Repository;
 use App\Models\Server;
 use App\Models\Setting;
 use App\Services\Audit\AuditLogger;
@@ -12,6 +13,7 @@ use App\Services\Monitoring\MetricsCollector;
 use App\Services\Server\ServerIdentity;
 use App\Services\Source\GitHubClient;
 use App\Services\Source\GitRefs;
+use App\Services\Source\SourceException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -42,7 +44,9 @@ class SettingsController extends Controller
                 'avatar_url' => $github->avatar_url,
                 'scopes' => $github->scopes,
                 'last_verified_at' => $github->last_verified_at?->toIso8601String(),
+                'token_type' => $github->token_type,
                 'token_rejected_at' => Setting::get(GitHubClient::TOKEN_REJECTED_SETTING),
+                'rate_limited_until' => ($until = GitHubClient::rateLimitedUntil(true)) ? gmdate('c', $until) : null,
             ] : ['connected' => false],
         ]);
     }
@@ -81,6 +85,7 @@ class SettingsController extends Controller
         }
 
         GithubConnection::query()->delete();
+        GitHubClient::clearBackoff();
         GithubConnection::query()->create([
             'user_id' => $request->user()->id,
             'account_login' => $user['login'],
@@ -93,14 +98,41 @@ class SettingsController extends Controller
         ]);
         Cache::forget('privatecloud:github-repos');
         Setting::query()->whereKey(GitHubClient::TOKEN_REJECTED_SETTING)->delete();
+        // Access problems caused by the old token are re-checked with the new one on the next fetch.
+        Repository::query()->whereIn('access_status', [Repository::ACCESS_AUTH_FAILED, Repository::ACCESS_NO_ACCESS, Repository::ACCESS_NO_CONTENTS])
+            ->update(['access_status' => null, 'last_check_error' => null]);
         $this->audit->log('github.connect', null, 'success', ['login' => $user['login']], $user['login']);
 
         return response()->json(['connected' => true, 'login' => $user['login']]);
     }
 
+    /** "Check connection": verify the saved token now (ignoring the back-off after a rejection). */
+    public function checkGithub(): JsonResponse
+    {
+        $connection = GithubConnection::current();
+        if ($connection === null) {
+            return response()->json(['message' => 'GitHub is not connected.'], 422);
+        }
+        try {
+            $user = GitHubClient::forConnectionCheck()->authenticatedUser();
+        } catch (SourceException $e) {
+            $this->audit->log('github.check', null, 'failure', ['reason' => $e->kind]);
+
+            return response()->json(['ok' => false, 'message' => $e->getMessage(), 'code' => 'source_'.$e->kind], 422);
+        }
+        $connection->update(['last_verified_at' => now(), 'scopes' => $user['scopes'], 'account_name' => $user['name'], 'avatar_url' => $user['avatar_url']]);
+        Setting::query()->whereKey(GitHubClient::TOKEN_REJECTED_SETTING)->delete();
+        GitHubClient::clearBackoff();
+        Repository::query()->where('access_status', Repository::ACCESS_AUTH_FAILED)->update(['access_status' => null, 'last_check_error' => null]);
+        $this->audit->log('github.check', null, 'success', ['login' => $user['login']], $user['login']);
+
+        return response()->json(['ok' => true, 'login' => $user['login'], 'message' => 'GitHub accepted the saved token ('.$user['login'].').']);
+    }
+
     public function disconnectGithub(): JsonResponse
     {
         GithubConnection::query()->delete();
+        GitHubClient::clearBackoff();
         Cache::forget('privatecloud:github-repos');
         Setting::query()->whereKey(GitHubClient::TOKEN_REJECTED_SETTING)->delete();
         $this->audit->log('github.disconnect');

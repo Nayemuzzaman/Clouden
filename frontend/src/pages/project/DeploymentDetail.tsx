@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Ban, Undo2 } from 'lucide-react'
+import { Ban, ExternalLink, RotateCw, ScrollText, Undo2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, errorMessage } from '../../lib/api'
 import { formatDateTime, formatDuration } from '../../lib/format'
 import type { Deployment, LogLine } from '../../lib/types'
 import { useDeploy, useProject } from '../../hooks/project'
-import { Button } from '../../components/ui/Button'
+import { Button, ExternalButton } from '../../components/ui/Button'
 import { Card, CardBody, KeyValue } from '../../components/ui/Card'
 import { ConfirmDialog } from '../../components/ui/Dialog'
 import { Callout, ErrorState, LoadingBlock } from '../../components/ui/Feedback'
@@ -15,6 +15,15 @@ import { Badge, DeploymentStatusBadge } from '../../components/ui/Status'
 import { Segmented } from '../../components/ui/Tabs'
 import { DeploymentTimeline } from '../../components/DeploymentTimeline'
 import { LogViewer, MAX_LOG_LINES } from '../../components/LogViewer'
+import { productionUrl, sourceLabel, triggerLabel } from '../../lib/production'
+
+const failureTitle: Record<string, string> = {
+  cloning: 'Deployment failed: the source could not be fetched',
+  building: 'Deployment failed: the Docker build failed',
+  starting: 'Deployment failed: the container did not start',
+  health_checking: 'Deployment failed: the health check failed',
+  routing: 'Deployment failed: traffic could not be switched',
+}
 
 const stageNames: Record<string, string> = {
   cloning: 'fetching the source code',
@@ -60,6 +69,9 @@ export default function DeploymentDetail() {
   const queryClient = useQueryClient()
   const [view, setView] = useState<'build' | 'container'>('build')
   const [confirmRollback, setConfirmRollback] = useState(false)
+  const logRef = useRef<HTMLDivElement>(null)
+  const live = project.current_deployment
+  const url = productionUrl(project)
 
   const { data: deployment, error, refetch } = useQuery({
     queryKey: ['deployment', project.slug, id],
@@ -111,39 +123,58 @@ export default function DeploymentDetail() {
         </div>
       </div>
 
-      <Card>
-        <CardBody className="space-y-5">
-          <DeploymentTimeline deployment={deployment} />
-          <dl className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            <KeyValue label="Commit">{deployment.commit ? <span className="mono">{deployment.commit.short_sha}</span> : '—'} <span className="muted">{deployment.commit?.message}</span></KeyValue>
-            <KeyValue label="Branch">{deployment.branch ?? '—'}</KeyValue>
-            <KeyValue label="Started">{formatDateTime(deployment.started_at ?? deployment.queued_at)}</KeyValue>
-            <KeyValue label="Duration">{formatDuration(deployment.duration_seconds)}{deployment.build_duration_seconds !== null && <span className="muted"> · build {formatDuration(deployment.build_duration_seconds)}</span>}</KeyValue>
-            <KeyValue label="Initiated by">{deployment.initiated_by ?? 'System'}</KeyValue>
-            <KeyValue label="Type">{deployment.type === 'rollback' ? `Rollback to #${deployment.rollback_of?.number}` : deployment.type === 'redeploy' ? 'Redeploy' : 'Deploy'} · {deployment.trigger}</KeyValue>
-            <KeyValue label="Image" mono>{deployment.image_tag ?? '—'}{deployment.image_id && <span className="muted"> ({deployment.image_id})</span>}</KeyValue>
-            <KeyValue label="Container" mono>{deployment.container_name ?? '—'}</KeyValue>
-          </dl>
-        </CardBody>
-      </Card>
-
       {f && deployment.status === 'failed' && (
-        <Callout tone="error" title="Deployment failed">
+        <Callout tone="error" title={failureTitle[f.stage] ?? 'Deployment failed'}>
           <div className="space-y-2">
-            <p>The deployment stopped while {stageNames[f.stage] ?? f.stage}.{project.current_deployment && project.current_deployment.id !== deployment.id && ` Deployment #${project.current_deployment.number} is still serving traffic.`}</p>
-            {f.step && <p><span className="font-medium">Step:</span> <code className="mono">{f.step}</code></p>}
+            <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-[auto_1fr]">
+              {deployment.commit && <><dt className="font-medium">Commit</dt><dd className="mono">{deployment.commit.short_sha} <span className="font-sans opacity-80">{deployment.commit.message}</span></dd></>}
+              {deployment.branch && <><dt className="font-medium">Branch</dt><dd>{deployment.branch}</dd></>}
+              <dt className="font-medium">Failed while</dt><dd>{stageNames[f.stage] ?? f.stage}{deployment.finished_at ? ` · ${formatDateTime(deployment.finished_at)}` : ''}</dd>
+              {f.step && <><dt className="font-medium">Step</dt><dd><code className="mono">{f.step}</code></dd></>}
+            </dl>
             <p><span className="font-medium">Error:</span> <span className="mono break-all">{f.reason}</span></p>
+            {live && live.id !== deployment.id ? (
+              <p className="font-medium">Production is still running: <span className="mono">{live.commit?.short_sha ?? `#${live.number}`}</span> (deployment #{live.number}).</p>
+            ) : !live ? <p>Nothing is live yet.</p> : null}
             {f.excerpt && (
               <details>
                 <summary className="cursor-pointer font-medium">Show error output</summary>
                 <pre className="mono mt-2 max-h-64 overflow-auto rounded-md bg-zinc-950 p-3 text-xs whitespace-pre-wrap text-zinc-200">{f.excerpt}</pre>
               </details>
             )}
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button size="sm" icon={<ScrollText className="size-3.5" />} onClick={() => { setView('build'); logRef.current?.scrollIntoView({ behavior: 'smooth' }) }}>View build log</Button>
+              {deployment.type === 'deploy' && deployment.commit && (
+                <Button size="sm" icon={<RotateCw className="size-3.5" />} loading={deploy.isPending} onClick={() => deploy.mutate({ type: 'commit', sha: deployment.commit!.sha })}>Retry</Button>
+              )}
+              {url && live && <ExternalButton size="sm" href={url} icon={<ExternalLink className="size-3.5" />}>Open production</ExternalButton>}
+            </div>
           </div>
         </Callout>
       )}
 
-      <div className="space-y-3">
+      <Card>
+        <CardBody className="space-y-5">
+          <DeploymentTimeline deployment={deployment} />
+          <dl className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <KeyValue label="Commit">{deployment.commit ? <span className="mono break-all" title={deployment.commit.sha}>{deployment.commit.sha}</span> : '—'} <span className="muted block">{deployment.commit?.message}</span></KeyValue>
+            <KeyValue label="Source">{sourceLabel(deployment)}</KeyValue>
+            <KeyValue label="Repository">{deployment.source?.repository ?? '—'}{deployment.source?.visibility && <span className="muted"> · {deployment.source.visibility === 'private' ? 'Private' : 'Public'}</span>}</KeyValue>
+            <KeyValue label="Branch">{deployment.branch ?? '—'}</KeyValue>
+            <KeyValue label="Trigger">{triggerLabel(deployment)}</KeyValue>
+            <KeyValue label="Production">{deployment.is_production ? <Badge tone="green">Yes, live</Badge> : 'No'}</KeyValue>
+            <KeyValue label="Initiated by">{deployment.initiated_by ?? 'System'}</KeyValue>
+            <KeyValue label="Started">{formatDateTime(deployment.started_at ?? deployment.queued_at)}</KeyValue>
+            <KeyValue label="Completed">{formatDateTime(deployment.finished_at)}</KeyValue>
+            <KeyValue label="Duration">{formatDuration(deployment.duration_seconds)}{deployment.build_duration_seconds !== null && <span className="muted"> · build {formatDuration(deployment.build_duration_seconds)}</span>}</KeyValue>
+            <KeyValue label="Image" mono>{deployment.image_tag ?? '—'}{deployment.image_id && <span className="muted"> ({deployment.image_id})</span>}</KeyValue>
+            <KeyValue label="Container" mono>{deployment.container_name ?? '—'}</KeyValue>
+          </dl>
+          {deployment.status === 'superseded' && <p className="muted text-sm">{deployment.failure?.reason ?? 'A newer deployment replaced this one before it started.'}</p>}
+        </CardBody>
+      </Card>
+
+      <div className="space-y-3" ref={logRef}>
         <Segmented value={view} onChange={setView} label="Log type" options={[{ value: 'build', label: 'Deployment log' }, { value: 'container', label: 'Container log' }]} />
         {view === 'build' ? (
           <LogViewer lines={lines} live={active} showStream emptyText={active ? 'Waiting for output…' : 'No output was recorded.'} />

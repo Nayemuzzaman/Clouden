@@ -174,18 +174,36 @@ Dockerfiles for Node.js, Next.js, React, Laravel and Python:
 
 ## Connect GitHub
 
-*Settings → GitHub* → paste a fine-grained personal access token with *Contents: Read*
-and *Metadata: Read* (and *Webhooks: Read and write* for automatic webhooks). Required for
-private repositories. See [docs/github.md](docs/github.md).
+Public repositories deploy without a token. For private repositories and automatic
+webhooks: *Settings → GitHub* → paste a fine-grained personal access token limited to
+your repositories with *Metadata: Read*, *Contents: Read* and *Webhooks: Read and write*
+— nothing else. It is stored encrypted and never returned to the browser.
+See [docs/github.md](docs/github.md).
 
-## Deploy, roll back, auto deploy
+## Production branch → live
 
-- **Deploy Latest** builds the newest commit of the branch. The overview shows the latest
-  commit and the commit in production.
-- **Rollback** (Deployments) puts a previous successful version back live, health-checked
-  first.
-- **Redeploy** applies changed environment variables, volumes or limits.
-- **Auto deploy** (*Settings*) deploys every push to the branch.
+Each GitHub project links a **production branch** (default `main`) to the live site:
+
+```
+git push origin main → signed webhook → exact commit → docker build → new container
+→ health check → Caddy switches traffic → live (the previous version is kept for rollback)
+```
+
+- Every deployment is pinned to an exact commit SHA when it is created. A broken commit
+  never replaces a healthy version: the dashboard shows **Deployment failed** and the
+  previous version keeps serving.
+- The project page shows the head of the branch, the production commit and a status:
+  **Synced**, **Out of sync**, **Deploying**, **Deployment failed** or **Unknown**, plus
+  clear messages when the GitHub token, repository access or branch needs attention.
+- **Deploy Latest** deploys the current head of the branch (or says production is already
+  current and offers a redeploy). **Rollback** puts an earlier version back without
+  touching GitHub; the commit you rolled back from is not redeployed automatically until
+  a new push or Deploy Latest.
+- One deployment per project at a time; rapid pushes deploy the newest commit; webhook
+  deliveries are verified, deduplicated and ignored when out of order or for other
+  branches and tags.
+- **Redeploy** applies changed environment variables, volumes or limits. Databases and
+  volumes are never touched by code deployments.
 
 ## Domains
 
@@ -273,7 +291,8 @@ Run from the installation directory (`/opt/privatecloud`).
 | `privatecloud:check-config` | Production configuration guard (runs automatically on start). |
 | `privatecloud:health [--plain\|--json]` | Docker, both PostgreSQL servers, Caddy, Redis and worker health; non-zero exit if a service is down. |
 | `privatecloud:idle` | Exit 0 when no deployment, backup or restore is running. |
-| `privatecloud:reconcile` | Fail stale jobs, detect crashed apps, repair project networks (every minute). |
+| `privatecloud:reconcile` | Fail stale jobs, detect crashed apps, repair project networks, restore a production route that drifted from the recorded deployment (every minute). |
+| `privatecloud:production-status [project] [--json]` | Compare branch head, recorded production, running container and Caddy route; non-zero exit on a mismatch. |
 | `privatecloud:recover-interrupted deployments\|default` | Clean up work interrupted by a worker restart (runs on worker start). |
 | `privatecloud:check-domains [--all]` | Re-check DNS and certificates. |
 | `privatecloud:scheduled-backups` | Start due scheduled backups and apply retention. |
@@ -290,14 +309,14 @@ so everything you can do in the dashboard can be scripted with the same session:
 | Area | Endpoints (examples) |
 | --- | --- |
 | Auth | `GET auth/csrf`, `POST auth/login`, `POST auth/logout`, `GET auth/me`, `POST auth/confirm-password`, `PUT auth/password` |
-| Projects | `GET/POST projects`, `GET/PATCH/DELETE projects/{slug}`, `POST projects/{slug}/start\|stop\|restart`, `PUT projects/{slug}/auto-deploy` |
-| Deployments | `GET/POST projects/{slug}/deployments`, `POST projects/{slug}/redeploy`, `GET …/deployments/{id}/logs`, `POST …/deployments/{id}/rollback\|cancel` |
+| Projects | `GET/POST projects`, `GET/PATCH/DELETE projects/{slug}`, `POST projects/{slug}/start\|stop\|restart\|refresh-commit`, `PUT projects/{slug}/auto-deploy`, `GET projects/{slug}/production`, `POST projects/{slug}/webhook/check` |
+| Deployments | `GET/POST projects/{slug}/deployments` (Deploy Latest; `commit_sha` to deploy an exact commit, `force` to rebuild), `POST projects/{slug}/redeploy`, `GET …/deployments/{id}/logs`, `POST …/deployments/{id}/rollback\|cancel` |
 | Environment | `GET/POST projects/{slug}/environment`, `POST …/environment/import`, `PUT/DELETE …/environment/{id}`, `POST …/environment/{id}/reveal` |
 | Domains | `GET/POST projects/{slug}/domains`, `POST …/domains/{id}/check\|primary`, `DELETE …/domains/{id}` |
 | Databases | `GET/POST databases`, `GET databases/{id}/tables`, `…/tables/{t}/rows` (CRUD), `POST databases/{id}/sql` |
 | Backups | `GET/POST backups`, `POST backups/{id}/restore`, `GET backups/{id}/download` |
 | Server | `GET containers`, `GET server/metrics`, `GET server/services`, `POST server/cleanup` |
-| Settings | `GET settings`, `PUT settings/thresholds`, `POST/DELETE settings/github`, `GET github/repositories` |
+| Settings | `GET settings`, `PUT settings/thresholds`, `POST/DELETE settings/github`, `POST settings/github/check`, `GET github/repositories` |
 | Webhooks | `POST webhooks/github/{project-uuid}` (HMAC-signed, no session) |
 
 All management endpoints require the administrator session and the `X-XSRF-TOKEN`
@@ -316,12 +335,13 @@ backend/                 Laravel API (app/Services holds the engine)
 frontend/                React dashboard (src/pages, src/components, src/hooks)
 docker/app/              Control-plane image (Dockerfile, entrypoint, FrankenPHP config)
 infrastructure/          Edge Caddyfile, systemd unit
-scripts/                 install, validate-install, update, backup-platform, dev-setup
+scripts/                 install, validate-install, update, backup-platform, dev-setup;
+                         acceptance/ (real GitHub + server test tools)
 examples/simple-node-app Example application with a Dockerfile and /health endpoint
 docs/                    Architecture, deployment, security, backups, GitHub,
                          troubleshooting, development, first server test, CI/CD
 .github/workflows/       CI (tests, analysis, smoke test) and Deploy (update.sh over SSH)
-.github/ci/              Smoke test and installer guard scripts used by CI
+.github/ci/              Smoke test, GitHub flow test (+ local GitHub simulation), installer guards
 docker-compose.yml       Production stack · docker-compose.dev.yml: local development
 ```
 
@@ -333,10 +353,11 @@ docker-compose.yml       Production stack · docker-compose.dev.yml: local devel
 | [Deploying applications](docs/deployment.md) | The Dockerfile contract, stages, rollback, build-time variables, limits, starter Dockerfiles |
 | [Security](docs/security.md) | Exposure, Docker socket trust boundary, sessions, secrets, injection safety, webhooks |
 | [Backups](docs/backups.md) | What is backed up, verification, restore, off-site copies, disaster recovery |
-| [GitHub](docs/github.md) | Token permissions, auto deploy, webhooks, token expiry |
+| [GitHub](docs/github.md) | Production branch → live, token permissions, public/private repositories, sync status, rollback, webhooks, failures |
 | [Troubleshooting](docs/troubleshooting.md) | Sign-in, DNS/HTTPS, failed deployments by stage, queues, disk, memory |
 | [Development](docs/development.md) | Local stack, tests, end-to-end and production-mode testing |
 | [First server test](docs/first-server-test.md) | Ordered validation procedure for a fresh Vultr server |
+| [GitHub acceptance test](docs/github-acceptance-test.md) | Real github.com + Vultr test of production branch → live, with the tools in `scripts/acceptance/` |
 | [CI/CD](docs/ci-cd.md) | What CI checks on every pull request; deploying updates to your server |
 
 The same guides are published in the [project wiki](https://github.com/Nayemuzzaman/Clouden/wiki).
@@ -383,7 +404,9 @@ GitHub Actions ([docs/ci-cd.md](docs/ci-cd.md)):
   installer guard rails in Ubuntu 24.04, compose validation), and a **production-mode
   smoke test** that starts the real stack, deploys the example app cloned from the branch
   on GitHub, kills the worker mid-deployment, takes backups and re-creates the control
-  plane.
+  plane, and a **GitHub production branch → live** end-to-end test (real git pushes to a
+  local GitHub simulation, real builds, containers, health checks and Caddy routing,
+  public and private repositories).
 - **Deploy** (manual, or automatic after green CI on `main` when `AUTO_DEPLOY=true`):
   runs `scripts/update.sh` on your server over SSH with a pinned host key and a deploy
   user that may only run that script.

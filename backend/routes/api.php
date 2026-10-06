@@ -62,6 +62,8 @@ Route::prefix('v1')->group(function () {
             Route::get('projects/{project}/detect', [ProjectActionController::class, 'detect']);
             Route::put('projects/{project}/auto-deploy', [ProjectActionController::class, 'autoDeploy']);
             Route::get('projects/{project}/webhook', [ProjectActionController::class, 'webhook']);
+            Route::post('projects/{project}/webhook/check', [ProjectActionController::class, 'checkWebhook'])->middleware('throttle:sensitive');
+            Route::get('projects/{project}/production', [ProjectActionController::class, 'production']);
             Route::post('projects/{project}/webhook/reveal', [ProjectActionController::class, 'revealWebhookSecret'])->middleware(['password.recent', 'throttle:sensitive']);
             Route::post('projects/{project}/webhook/rotate', [ProjectActionController::class, 'rotateWebhookSecret'])->middleware('password.recent');
 
@@ -152,6 +154,7 @@ Route::prefix('v1')->group(function () {
             Route::put('settings/server', [SettingsController::class, 'updateServer']);
             Route::post('settings/github', [SettingsController::class, 'connectGithub'])->middleware('password.recent');
             Route::delete('settings/github', [SettingsController::class, 'disconnectGithub']);
+            Route::post('settings/github/check', [SettingsController::class, 'checkGithub'])->middleware('throttle:sensitive');
             Route::get('github/repositories', [SettingsController::class, 'repositories']);
             Route::get('github/repositories/{owner}/{repo}/branches', [SettingsController::class, 'branches']);
 

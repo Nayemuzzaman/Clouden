@@ -8,6 +8,7 @@ use App\Enums\ProjectStatus;
 use App\Jobs\DeleteProject;
 use App\Models\Operation;
 use App\Models\Project;
+use App\Models\Repository;
 use App\Models\Server;
 use App\Models\User;
 use App\Services\Audit\AuditLogger;
@@ -16,6 +17,7 @@ use App\Services\Databases\Identifier;
 use App\Services\Deployment\ContainerLauncher;
 use App\Services\Domains\DomainService;
 use App\Services\Environment\EnvironmentService;
+use App\Services\Source\SourceException;
 use App\Services\Source\SourceFetcher;
 use DomainException;
 use Illuminate\Support\Facades\DB;
@@ -30,6 +32,7 @@ class ProjectService
         private readonly DatabaseService $databases,
         private readonly SourceFetcher $fetcher,
         private readonly AutoDeployService $autoDeploy,
+        private readonly RepositoryConnection $connection,
         private readonly AuditLogger $audit,
     ) {}
 
@@ -41,7 +44,17 @@ class ProjectService
     {
         $warnings = [];
 
-        $project = DB::transaction(function () use ($data) {
+        // GitHub: the repository must be readable and the production branch must exist
+        // before anything is created (a refusal is a validation error, an outage a warning).
+        $check = null;
+        if (($data['source_type'] ?? null) === Project::SOURCE_GITHUB) {
+            $check = $this->connection->check(Project::SOURCE_GITHUB, (string) $data['repository'], (string) ($data['branch'] ?? 'main'));
+            if ($check['warning']) {
+                $warnings[] = $check['warning'];
+            }
+        }
+
+        $project = DB::transaction(function () use ($data, $check) {
             $project = Project::query()->create([
                 'server_id' => Server::local()->id,
                 'name' => $data['name'],
@@ -60,6 +73,7 @@ class ProjectService
             ]);
 
             if ($project->source_type !== Project::SOURCE_IMAGE) {
+                $commit = $check['commit'] ?? null; // only GitHub sources are verified up front
                 $project->repository()->create([
                     'provider' => $project->source_type,
                     'full_name' => $data['repository'] ?? null,
@@ -67,6 +81,13 @@ class ProjectService
                         ? 'https://github.com/'.$data['repository'].'.git'
                         : $data['repository_url'],
                     'branch' => $data['branch'] ?? 'main',
+                    'visibility' => $check['visibility'] ?? null,
+                    'latest_commit_sha' => $commit?->sha,
+                    'latest_commit_message' => $commit?->title(),
+                    'latest_commit_author' => $commit?->author,
+                    'latest_commit_at' => $commit?->committedAt,
+                    'last_checked_at' => $commit ? now() : null,
+                    'access_status' => $commit ? Repository::ACCESS_OK : null,
                 ]);
             }
 
@@ -87,7 +108,7 @@ class ProjectService
 
         $this->audit->log('project.created', $project, metadata: ['source' => $project->source_type]);
 
-        if ($project->repository) {
+        if ($project->repository && $check === null) {
             try {
                 $this->refreshCommit($project);
             } catch (Throwable $e) {
@@ -124,18 +145,23 @@ class ProjectService
         if (! $repository) {
             return;
         }
+        if ($repository->isGitHub()) {
+            try {
+                $this->fetcher->refreshVisibility($repository);
+            } catch (SourceException $e) {
+                $this->fetcher->recordFailure($repository, $e);
+                if ($e->kind !== SourceException::NOT_FOUND) {
+                    throw $e;
+                }
+                // Not visible: latestCommit() below explains it (and falls back to the token).
+            }
+        }
         try {
-            $commit = $this->fetcher->latestCommit($repository);
-            $repository->update([
-                'latest_commit_sha' => $commit->sha,
-                'latest_commit_message' => $commit->title() ?? ($repository->latest_commit_sha === $commit->sha ? $repository->latest_commit_message : null),
-                'latest_commit_author' => $commit->author ?? ($repository->latest_commit_sha === $commit->sha ? $repository->latest_commit_author : null),
-                'latest_commit_at' => $commit->committedAt,
-                'last_checked_at' => now(),
-                'last_check_error' => null,
-            ]);
+            $this->fetcher->latestCommit($repository); // records the head commit and access status
         } catch (Throwable $e) {
-            $repository->update(['last_checked_at' => now(), 'last_check_error' => $e->getMessage()]);
+            if (! $e instanceof SourceException) {
+                $repository->update(['last_checked_at' => now(), 'last_check_error' => $e->getMessage()]);
+            }
 
             throw $e;
         }

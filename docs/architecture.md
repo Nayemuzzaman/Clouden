@@ -86,12 +86,16 @@ examples/               simple-node-app used for deployment testing
 
 ```
 queued → cloning → building → starting → health_checking → routing → success
-                                                                    ↘ failed / cancelled
+   ↘ superseded                                                     ↘ failed / cancelled
 ```
 
-1. **cloning** – GitHub sources: resolve the branch to a commit with the GitHub API and
-   download that exact commit as a tarball (private repos use the stored token).
-   Other git URLs: `git clone` with argument lists only.
+0. **creation** – every source deployment is pinned to an exact commit SHA (the pushed
+   commit, or the branch head read by *Deploy Latest*). Manual deploys, webhooks,
+   rollbacks and redeploys all go through `DeploymentService` and the same pipeline.
+1. **cloning** – GitHub sources: download that exact commit as a tarball through the
+   GitHub API (public repositories anonymously, private ones with the stored token in the
+   `Authorization` header only) and verify it. Other git URLs: `git clone` with argument
+   lists only, then check out the pinned commit.
 2. **building** – `docker build` with BuildKit (`--progress=plain`) through the Docker CLI.
    The output is streamed into the deployment log. On failure the log is parsed to name
    the failing Dockerfile step and the most relevant error line.
@@ -112,8 +116,16 @@ check. Details and guarantees: [deployment.md](deployment.md).
 
 ## Concurrency
 
-- Creating a deployment locks the project row; a newer request supersedes deployments
-  that are still waiting in the queue.
+- Creating a deployment locks the project row; at most one deployment waits per
+  project, so a newer request supersedes one that has not started (state `superseded`),
+  and a request for a commit that is already being deployed reuses that deployment.
+- The worker claims a deployment atomically (`started_at` set only if still queued), and
+  never starts one while another deployment of the project is past `queued`.
+- Production state: `projects.current_deployment_id` (what is live),
+  `repositories.latest_commit_sha` (branch head as last seen), and an explicit rollback
+  hold (`rolled_back_at`, `rollback_hold_sha`) so auto deploy respects a manual rollback.
+  `ProductionReconciler` compares these with Docker and Caddy
+  (`privatecloud:production-status`).
 - Deployment, restore and deletion jobs share a per-project lock
   (`WithoutOverlapping('project:<id>')`), so they never touch the same project at once;
   later jobs wait.

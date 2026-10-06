@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Eye } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, ApiError, errorMessage } from '../../lib/api'
-import { formatBytes } from '../../lib/format'
+import { formatBytes, timeAgo } from '../../lib/format'
 import type { Operation, Project } from '../../lib/types'
 import { useInvalidateProject, useProject } from '../../hooks/project'
 import { Button } from '../../components/ui/Button'
@@ -88,11 +88,12 @@ export default function ProjectSettings() {
     mutationFn: (fields: string[]) => {
       const body: Record<string, unknown> = {}
       fields.forEach((f) => (body[f] = form[f]))
-      return api<{ data: Project }>(`/projects/${project.slug}`, { method: 'PATCH', body })
+      return api<{ data: Project; warnings?: string[] }>(`/projects/${project.slug}`, { method: 'PATCH', body })
     },
-    onSuccess: () => {
+    onSuccess: (r) => {
       setErrors({})
       toast.success('Settings saved. They apply to the next deployment.')
+      r.warnings?.forEach((w) => toast.warning(w, { duration: 12000 }))
       invalidate()
     },
     onError: (e) => {
@@ -101,7 +102,16 @@ export default function ProjectSettings() {
     },
   })
 
-  const webhook = useQuery({ queryKey: ['webhook', project.slug], queryFn: () => api<{ url: string | null; installed: boolean; recent_events: { delivery_id: string; event: string; status: string; reason: string | null; created_at: string }[] }>(`/projects/${project.slug}/webhook`) })
+  const webhook = useQuery({
+    queryKey: ['webhook', project.slug],
+    queryFn: () => api<{ url: string | null; installed: boolean; status: string | null; error: string | null; last_delivery_at: string | null; recent_events: { delivery_id: string; event: string; ref: string | null; commit_sha: string | null; status: string; reason: string | null; created_at: string }[] }>(`/projects/${project.slug}/webhook`),
+  })
+  const checkWebhook = useMutation({
+    mutationFn: () => api<{ message: string }>(`/projects/${project.slug}/webhook/check`, { method: 'POST' }),
+    onSuccess: (r) => toast.success(r.message),
+    onError: (e) => toast.error(errorMessage(e)),
+    onSettled: () => { invalidate(); queryClient.invalidateQueries({ queryKey: ['webhook', project.slug] }) },
+  })
   const autoDeploy = useMutation({
     mutationFn: (enabled: boolean) => api<{ auto_deploy: boolean; message: string | null }>(`/projects/${project.slug}/auto-deploy`, { method: 'PUT', body: { enabled } }),
     onSuccess: (r) => {
@@ -166,7 +176,7 @@ export default function ProjectSettings() {
               ) : (
                 <Field label="Repository URL" error={err('repository_url')}>{(id) => <Input id={id} {...bind('repository_url')} />}</Field>
               )}
-              <Field label="Branch" error={err('branch')}>{(id) => <Input id={id} {...bind('branch')} />}</Field>
+              <Field label="Production branch" help="Pushes to this branch go live (with auto deploy). Checked on GitHub before saving." error={err('branch')}>{(id) => <Input id={id} {...bind('branch')} />}</Field>
               <Field label="Dockerfile path" error={err('dockerfile_path')}>{(id) => <Input id={id} className="mono" {...bind('dockerfile_path')} />}</Field>
               <Field label="Build context" error={err('build_context')}>{(id) => <Input id={id} className="mono" {...bind('build_context')} />}</Field>
               <Field label="Application port" error={err('port')}>{(id) => <Input id={id} type="number" {...bind('port')} />}</Field>
@@ -208,12 +218,20 @@ export default function ProjectSettings() {
       </Section>
 
       <Card>
-        <CardHeader title="Auto deploy" description="Deploy automatically when commits are pushed to the configured branch." />
+        <CardHeader title="Auto deploy" description="Deploy automatically when commits are pushed to the production branch. A failed deployment never replaces the running version." />
         <CardBody className="space-y-4">
           <Switch checked={project.auto_deploy} disabled={autoDeploy.isPending || project.source_type === 'image'} onCheckedChange={(v) => autoDeploy.mutate(v)} label={project.auto_deploy ? 'On' : 'Off'} description={project.source_type === 'image' ? 'Not available for image-based projects.' : `Pushes to ${project.repository?.branch} trigger a deployment. Other branches are ignored.`} />
           {project.auto_deploy && webhook.data && (
             <div className="space-y-3 rounded-lg border border-zinc-200 p-4 text-sm dark:border-zinc-800">
-              <p>{webhook.data.installed ? 'The GitHub webhook is installed.' : 'Add this webhook in your repository settings (Settings → Webhooks), content type application/json, event “push”:'}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p>
+                  {webhook.data.status === 'orphaned' ? <span className="text-amber-700 dark:text-amber-300">{webhook.data.error}</span>
+                    : webhook.data.status === 'failed' ? <span className="text-red-600 dark:text-red-400">The webhook could not be created: {webhook.data.error}</span>
+                    : webhook.data.installed ? <>The GitHub webhook is installed{webhook.data.last_delivery_at ? <> · last delivery {timeAgo(webhook.data.last_delivery_at)}</> : ''}.</>
+                    : 'Add this webhook in your repository settings (Settings → Webhooks), content type application/json, event “push”:'}
+                </p>
+                {project.source_type === 'github' && <Button size="sm" loading={checkWebhook.isPending} onClick={() => checkWebhook.mutate()}>Check webhook</Button>}
+              </div>
               <div className="flex items-center gap-2"><span className="muted w-16 shrink-0">URL</span><span className="mono truncate">{webhook.data.url ?? 'Set PC_DASHBOARD_DOMAIN first'}</span>{webhook.data.url && <CopyButton value={webhook.data.url} />}</div>
               <div className="flex items-center gap-2"><span className="muted w-16 shrink-0">Secret</span>
                 {secret ? <><span className="mono truncate">{secret}</span><CopyButton value={secret} /></> : <Button size="sm" variant="ghost" icon={<Eye className="size-3.5" />} onClick={() => api<{ secret: string }>(`/projects/${project.slug}/webhook/reveal`, { method: 'POST' }).then((r) => setSecret(r.secret)).catch((e) => toast.error(errorMessage(e)))}>Reveal</Button>}
@@ -222,7 +240,7 @@ export default function ProjectSettings() {
                 <div>
                   <p className="muted mb-1 text-xs">Recent deliveries</p>
                   <ul className="space-y-1 text-xs">
-                    {webhook.data.recent_events.map((e) => <li key={e.delivery_id} className="flex gap-2"><span className="mono">{e.event}</span><span className={e.status === 'accepted' ? 'text-emerald-600' : 'muted'}>{e.status}</span><span className="muted truncate">{e.reason}</span></li>)}
+                    {webhook.data.recent_events.map((e) => <li key={e.delivery_id} className="flex gap-2"><span className="muted shrink-0" title={e.created_at}>{timeAgo(e.created_at)}</span><span className="mono">{e.event}</span>{e.ref && <span className="mono muted">{e.ref.replace('refs/heads/', '')}</span>}{e.commit_sha && <span className="mono">{e.commit_sha.slice(0, 7)}</span>}<span className={e.status === 'accepted' ? 'text-emerald-600' : 'muted'}>{e.status}</span><span className="muted truncate">{e.reason}</span></li>)}
                   </ul>
                 </div>
               )}

@@ -50,7 +50,7 @@ describe('New project form', () => {
 
     await userEvent.type(screen.getByLabelText('Repository'), 'acme/japan-lingo')
     expect(screen.getByLabelText('Project name')).toHaveValue('Japan Lingo')
-    await waitFor(() => expect(screen.getByLabelText('Branch').tagName).toBe('SELECT'))
+    await waitFor(() => expect(screen.getByLabelText('Production branch').tagName).toBe('SELECT'))
     await userEvent.type(screen.getByLabelText(/^Domain/), 'app.example.com')
     await userEvent.click(screen.getByRole('switch', { name: 'Create a PostgreSQL database' }))
     await userEvent.selectOptions(screen.getByLabelText('RAM limit'), '1024')
@@ -76,8 +76,8 @@ describe('New project form', () => {
     })
     renderWithProviders(<NewProject />)
     await userEvent.type(screen.getByLabelText('Repository'), 'acme/shop')
-    await userEvent.clear(screen.getByLabelText('Branch'))
-    await userEvent.type(screen.getByLabelText('Branch'), '--evil')
+    await userEvent.clear(screen.getByLabelText('Production branch'))
+    await userEvent.type(screen.getByLabelText('Production branch'), '--evil')
     await userEvent.click(screen.getByRole('button', { name: 'Create Project' }))
     expect(await screen.findByText('This is not a valid branch name.')).toBeInTheDocument()
   })
@@ -173,10 +173,10 @@ describe('Deployment detail', () => {
     const project: Project = { ...baseProject, current_deployment: { ...failed, id: 3, number: 3, status: 'success', failure: null, is_production: true } }
     renderWithProviders(<DeploymentDetail />, { project, route: '/deployments/9', path: '/deployments/:deploymentId' })
 
-    expect(await screen.findByText('Deployment failed')).toBeInTheDocument()
+    expect(await screen.findByText('Deployment failed: the Docker build failed')).toBeInTheDocument()
     expect(screen.getByText('npm run build')).toBeInTheDocument()
     expect(screen.getByText("Error: Cannot find module 'xyz'")).toBeInTheDocument()
-    expect(screen.getByText(/Deployment #3 is still serving traffic/)).toBeInTheDocument()
+    expect(screen.getByText(/Production is still running:/)).toHaveTextContent('Production is still running: aaaaaaa (deployment #3).')
     expect(await screen.findByText('#7 [4/5] RUN npm run build')).toBeInTheDocument()
     expect(screen.queryByText('Successful')).not.toBeInTheDocument()
   })

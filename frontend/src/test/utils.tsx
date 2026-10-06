@@ -53,6 +53,7 @@ export const baseProject: Project = {
   id: 1, uuid: 'u-1', name: 'Shop', slug: 'shop', status: 'running', source_type: 'github', image: null, dockerfile_path: 'Dockerfile', build_context: '.', port: 3000,
   memory_limit_mb: 512, cpu_limit: 1, health_check: { type: 'http', path: '/health', status_min: 200, status_max: 399, timeout: 5, retries: 10, interval: 3 },
   auto_deploy: false, image_retention: 5, backup_schedule: 'off', backup_time: '03:00', backup_retention: 7, deleting: false,
-  repository: { provider: 'github', full_name: 'acme/shop', url: 'https://github.com/acme/shop.git', branch: 'main', latest_commit: null, last_checked_at: null, last_check_error: null, webhook_installed: false },
+  repository: { provider: 'github', full_name: 'acme/shop', url: 'https://github.com/acme/shop.git', branch: 'main', latest_commit: null, visibility: 'private', last_checked_at: null, last_check_error: null, access_status: null, webhook_installed: false, webhook_status: null, webhook_error: null, webhook_last_delivery_at: null },
+  sync: null, rolled_back_at: null,
   primary_domain: 'shop.example.com', domains: [], current_deployment: null, latest_deployment: null, database: null, volumes: [], created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z',
 }

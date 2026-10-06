@@ -1,18 +1,15 @@
 import { Link } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowRight, Box, Cpu, Database, GitBranch, GitCommitHorizontal, Globe, HardDrive, MemoryStick, RefreshCw, Rocket } from 'lucide-react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
-import { api, errorMessage } from '../../lib/api'
+import { ArrowRight, Box, Cpu, Database, Globe, HardDrive, MemoryStick, Rocket } from 'lucide-react'
+import { api } from '../../lib/api'
 import { formatBytes, formatPercent, formatTime, percentOf, timeAgo } from '../../lib/format'
 import type { Backup, LogLine, Paginated } from '../../lib/types'
-import { useDeploy, useProject } from '../../hooks/project'
-import { Button } from '../../components/ui/Button'
+import { useProject } from '../../hooks/project'
 import { Card, CardBody, CardHeader, KeyValue } from '../../components/ui/Card'
 import { Callout, Meter } from '../../components/ui/Feedback'
-import { DeploymentStatusBadge, JobStatusBadge } from '../../components/ui/Status'
+import { JobStatusBadge } from '../../components/ui/Status'
 import { DeploymentTimeline } from '../../components/DeploymentTimeline'
-import { GitHubIcon } from '../../components/GitHubIcon'
+import { DeployLatestButton, ProductionCard, SourceCard } from '../../components/Production'
 
 interface ContainerInfo {
   container: { name: string; image: string; state: string; running: boolean; restart_count: number; started_at: string; oom_killed: boolean } | null
@@ -22,8 +19,6 @@ interface ContainerInfo {
 
 export default function Overview() {
   const project = useProject()
-  const queryClient = useQueryClient()
-  const deploy = useDeploy(project.slug)
   const container = useQuery({
     queryKey: ['container', project.slug],
     queryFn: () => api<ContainerInfo>(`/projects/${project.slug}/container`),
@@ -40,16 +35,9 @@ export default function Overview() {
     queryKey: ['backups', project.slug, 'latest'],
     queryFn: () => api<Paginated<Backup>>('/backups', { query: { project: project.slug, per_page: 1 } }),
   })
-  const refresh = useMutation({
-    mutationFn: () => api(`/projects/${project.slug}/refresh-commit`, { method: 'POST' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project', project.slug] }),
-    onError: (e) => toast.error(errorMessage(e)),
-  })
 
   const current = project.current_deployment
   const latest = project.latest_deployment
-  const latestCommit = project.repository?.latest_commit
-  const behind = latestCommit && current?.commit && latestCommit.sha !== current.commit.sha
   const usage = container.data?.usage
   const memPct = usage ? percentOf(usage.memory_used_bytes, container.data?.limits.memory_bytes) : null
   const cpuPct = usage ? Math.min(100, usage.cpu_percent / Math.max(project.cpu_limit, 0.01)) : null
@@ -64,61 +52,23 @@ export default function Overview() {
             <CardBody><DeploymentTimeline deployment={latest} /></CardBody>
           </Card>
         )}
-        {latest && latest.status === 'failed' && latest.id !== current?.id && (
+        {latest && latest.status === 'failed' && latest.id !== current?.id && project.sync?.state !== 'failed' && (
           <Callout tone="error" title={`Deployment #${latest.number} failed`} action={<Link to={`deployments/${latest.id}`} className="text-sm font-medium underline">Details</Link>}>
             {latest.failure?.reason}
             {current && <span className="block opacity-80">Deployment #{current.number} is still serving traffic.</span>}
           </Callout>
         )}
 
-        <Card>
-          <CardHeader
-            title="Source"
-            icon={project.source_type === 'github' ? <GitHubIcon /> : project.source_type === 'image' ? <Box className="size-4" /> : <GitBranch className="size-4" />}
-            actions={project.repository && <Button size="sm" variant="ghost" icon={<RefreshCw className="size-3.5" />} loading={refresh.isPending} onClick={() => refresh.mutate()}>Check for new commits</Button>}
-          />
-          <CardBody>
-            {project.repository ? (
-              <dl className="grid gap-5 sm:grid-cols-2">
-                <KeyValue label="Repository">{project.repository.full_name ?? project.repository.url}</KeyValue>
-                <KeyValue label="Branch"><span className="inline-flex items-center gap-1"><GitBranch className="size-3.5" /> {project.repository.branch}</span></KeyValue>
-                <KeyValue label="Latest commit">
-                  {latestCommit ? (
-                    <span className="flex min-w-0 items-center gap-2"><span className="mono shrink-0 rounded bg-zinc-100 px-1.5 dark:bg-zinc-800">{latestCommit.short_sha}</span> <span className="truncate">{latestCommit.message ?? ''}</span></span>
-                  ) : project.repository.last_check_error ? <span className="text-red-600">{project.repository.last_check_error}</span> : '—'}
-                </KeyValue>
-                <KeyValue label="Production commit">
-                  {current?.commit ? (
-                    <span className="flex min-w-0 items-center gap-2"><span className="mono shrink-0 rounded bg-zinc-100 px-1.5 dark:bg-zinc-800">{current.commit.short_sha}</span> <span className="truncate">{current.commit.message ?? ''}</span></span>
-                  ) : 'Not deployed'}
-                </KeyValue>
-              </dl>
-            ) : (
-              <KeyValue label="Image"><span className="mono">{project.image}</span></KeyValue>
-            )}
-            {behind && (
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-brand-50 px-4 py-3 text-sm dark:bg-brand-500/10">
-                <span className="flex items-center gap-2"><GitCommitHorizontal className="size-4" /> A newer commit is available ({latestCommit?.short_sha}{latestCommit?.author ? ` by ${latestCommit.author}` : ''}).</span>
-                <Button size="sm" variant="primary" icon={<Rocket className="size-3.5" />} loading={deploy.isPending} onClick={() => deploy.mutate({ type: 'latest' })}>Deploy Latest</Button>
-              </div>
-            )}
-          </CardBody>
-        </Card>
+        {project.repository ? (
+          <SourceCard project={project} />
+        ) : (
+          <Card>
+            <CardHeader title="Source" icon={<Box className="size-4" />} actions={<DeployLatestButton project={project} size="sm" />} />
+            <CardBody><KeyValue label="Image"><span className="mono">{project.image}</span></KeyValue></CardBody>
+          </Card>
+        )}
 
-        <Card>
-          <CardHeader title="Current deployment" icon={<Rocket className="size-4" />} actions={<Link to="deployments" className="muted text-sm hover:underline">History</Link>} />
-          <CardBody>
-            {current ? (
-              <dl className="grid gap-5 sm:grid-cols-3">
-                <KeyValue label="Deployment"><Link to={`deployments/${current.id}`} className="hover:underline">#{current.number}</Link> <DeploymentStatusBadge status={current.status} /></KeyValue>
-                <KeyValue label="Deployed">{timeAgo(current.finished_at)}</KeyValue>
-                <KeyValue label="By">{current.initiated_by ?? '—'}</KeyValue>
-              </dl>
-            ) : (
-              <p className="muted text-sm">This project has not been deployed yet. Click <strong>Deploy</strong> to build and start it.</p>
-            )}
-          </CardBody>
-        </Card>
+        <ProductionCard project={project} />
 
         {project.current_deployment && (
           <Card>

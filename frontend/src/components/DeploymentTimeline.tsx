@@ -19,7 +19,7 @@ export function DeploymentTimeline({ deployment }: { deployment: Deployment }) {
   const failedAt = deployment.status === 'failed' ? deployment.failure?.stage ?? null : null
   const currentIndex = (() => {
     if (deployment.status === 'success') return stages.length - 1
-    if (deployment.status === 'failed' || deployment.status === 'cancelled') {
+    if (deployment.status === 'failed' || deployment.status === 'cancelled' || deployment.status === 'superseded') {
       const idx = stages.findIndex((s) => s.key === failedAt)
       return idx === -1 ? 0 : idx
     }
@@ -31,7 +31,7 @@ export function DeploymentTimeline({ deployment }: { deployment: Deployment }) {
       {stages.map((stage, i) => {
         const done = i < currentIndex || deployment.status === 'success'
         const current = i === currentIndex && deployment.is_active
-        const failed = i === currentIndex && (deployment.status === 'failed' || deployment.status === 'cancelled')
+        const failed = i === currentIndex && (deployment.status === 'failed' || deployment.status === 'cancelled' || deployment.status === 'superseded')
         return (
           <li key={stage.key} className="flex items-center gap-1" aria-current={current ? 'step' : undefined}>
             <span
@@ -46,7 +46,7 @@ export function DeploymentTimeline({ deployment }: { deployment: Deployment }) {
               {done && <Check className="size-3" aria-hidden />}
               {current && <Loader2 className="size-3 animate-spin" aria-hidden />}
               {failed && <X className="size-3" aria-hidden />}
-              {failed && deployment.status === 'cancelled' ? 'Cancelled' : stage.label}
+              {failed && deployment.status === 'cancelled' ? 'Cancelled' : failed && deployment.status === 'superseded' ? 'Superseded' : stage.label}
             </span>
             {i < stages.length - 1 && <span className="h-px w-3 bg-zinc-200 dark:bg-zinc-700" aria-hidden />}
           </li>
